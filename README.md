@@ -3,7 +3,7 @@
 > Simple, fast neural network quantization in pure Rust
 
 [![Crates.io](https://img.shields.io/crates/v/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
-[![Documentation](https://docs.rs/crate/quantize-rs/badge.svg)](https://docs.rs/quantize-rs)
+[![Documentation](https://img.shields.io/crate/d/quantize-rs/badge.svg)](https://docs.rs/quantize-rs)
 [![Downloads](https://img.shields.io/crates/d/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
