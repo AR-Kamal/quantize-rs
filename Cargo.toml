@@ -1,20 +1,25 @@
 [package]
-name = "quantify"
+name = "quantize-rs"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name abdulrahmandev141@gmail.com"]
-description = "Simple neural network quantization toolkit"
+authors = ["Abdul Rahman Kamal <abdulrahmandev141@gmail.com>"]
+description = "Simple neural network quantization toolkit, up to 4x smaller models with minimal accuracy loss"
 license = "MIT"
-repository = "https://github.com/AR-Kamal/quantify"
+repository = "https://github.com/AR-Kamal/quantize-rs"
+homepage = "https://github.com/AR-Kamal/quantize-rs"
+documentation = "https://docs.rs/quantize-rs"
+readme = "README.md"
 keywords = ["quantization", "neural-network", "onnx", "ml", "optimization"]
-categories = ["command-line-utilities", "science"]
+categories = ["command-line-utilities", "science", "compression"]
+exclude = ["*.onnx", "examples/*.onnx"]
 
 [dependencies]
 tract-onnx = "0.21"
 tract-core = "0.21"
+
 # ONNX model parsing
 onnx = "0.1.0"
-prost = "0.12"           # Protocol buffers (ONNX uses protobuf)
+prost = "0.12"
 protobuf = "1.7" 
 
 # Tensor operations
@@ -36,13 +41,26 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 [dev-dependencies]
-approx = "0.5"  # For floating point comparisons in tests
+approx = "0.5"
 
 [[bin]]
-name = "quantify"
+name = "quantize-rs"
 path = "src/main.rs"
+
+[lib]
+name = "quantize_rs"
+path = "src/lib.rs"
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
+strip = true
+
+[[example]]
+name = "basic_quantization"
+path = "examples/basic_quantization.rs"
+
+[[example]]
+name = "batch_quantize"
+path = "examples/batch_quantize.rs"

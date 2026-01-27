@@ -1,4 +1,4 @@
-//! Quantify CLI
+//! Quantize-rs CLI
 //!
 //! Command-line interface for neural network quantization.
 
@@ -12,7 +12,7 @@ use cli::commands;
 
 #[derive(Parser)]
 #[command(
-    name = "quantify",
+    name = "quantize-rs",
     version,
     about = "Neural network quantization toolkit",
     long_about = "Convert ONNX models to INT8/INT4 for faster, smaller deployment"
@@ -65,7 +65,7 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    println!("{}", "🔧 Quantify v0.1.0".bold().cyan());
+    println!("{}", "quantize-rs v0.1.0".bold().cyan());
     println!();
 
     match cli.command {
@@ -80,7 +80,10 @@ fn main() -> Result<()> {
         Commands::Info { input } => {
             commands::info(&input)?;
         }
-        Commands::Benchmark { original, quantized } => {
+        Commands::Benchmark {
+            original,
+            quantized,
+        } => {
             commands::benchmark(&original, &quantized)?;
         }
     }

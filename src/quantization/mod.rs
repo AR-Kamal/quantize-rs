@@ -1,7 +1,7 @@
 // src\quantization\mod.rs
 //! Quantization algorithms
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 /// Quantization configuration
 #[derive(Debug, Clone)]
@@ -122,9 +122,7 @@ impl QuantizedTensor {
         let params = QuantParams::from_range(min, max);
 
         // Quantize all values
-        let quantized_data: Vec<i8> = data.iter()
-            .map(|&v| params.quantize(v))
-            .collect();
+        let quantized_data: Vec<i8> = data.iter().map(|&v| params.quantize(v)).collect();
 
         Ok(QuantizedTensor {
             data: quantized_data,
@@ -135,7 +133,8 @@ impl QuantizedTensor {
 
     /// Dequantize back to float32
     pub fn to_f32(&self) -> Vec<f32> {
-        self.data.iter()
+        self.data
+            .iter()
             .map(|&v| self.params.dequantize(v))
             .collect()
     }
@@ -150,14 +149,15 @@ impl QuantizedTensor {
         if original.is_empty() {
             return 0.0;
         }
-        
+
         let dequantized = self.to_f32();
-        
-        let sum: f32 = original.iter()
+
+        let sum: f32 = original
+            .iter()
             .zip(dequantized.iter())
             .map(|(a, b)| (a - b).powi(2))
             .sum();
-        
+
         let mse = sum / original.len() as f32;
         mse
     }
@@ -189,15 +189,15 @@ mod tests {
     #[test]
     fn test_quant_params() {
         let params = QuantParams::from_range(-1.0, 1.0);
-        
+
         // Test quantization
         assert_eq!(params.quantize(0.0), params.zero_point);
-        
+
         // Test round-trip
         let original = 0.5;
         let quantized = params.quantize(original);
         let dequantized = params.dequantize(quantized);
-        
+
         // Should be close (within quantization error)
         assert!((original - dequantized).abs() < 0.01);
     }
@@ -206,9 +206,9 @@ mod tests {
     fn test_quantize_tensor() {
         let data = vec![0.0, 0.5, 1.0, -0.5, -1.0];
         let shape = vec![5];
-        
+
         let quantized = QuantizedTensor::from_f32(&data, shape).unwrap();
-        
+
         assert_eq!(quantized.data.len(), 5);
         assert_eq!(quantized.size_bytes(), 5); // 5 bytes (INT8)
     }
