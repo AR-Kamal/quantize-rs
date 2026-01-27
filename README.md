@@ -59,7 +59,7 @@ $ quantize-rs quantize resnet18.onnx -o resnet18_int8.onnx
 Loading model: resnet18.onnx
 ✓ Model loaded
 
-🔧 Quantizing to INT8...
+Quantizing to INT8...
 ✓ Quantization complete
 
 Results:
@@ -248,6 +248,12 @@ See the [`examples/`](examples/) directory for:
 
 ---
 
+## Future work
+
+What is my planning?
+1. quantize x4 -> x8? working
+2. Other improvement? maybe
+---
 ## Contributing
 
 Contributions welcome! Please:
