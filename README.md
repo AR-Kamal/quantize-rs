@@ -4,6 +4,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
 [![Documentation](https://docs.rs/quantize-rs/badge.svg)](https://docs.rs/quantize-rs)
+[![Downloads](https://img.shields.io/crates/d/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **quantize-rs** reduces neural network size by up to **8x** while preserving accuracy. Convert float32 weights to INT8/INT4 with advanced per-channel quantization and custom packed storage.
@@ -81,7 +82,7 @@ quantize-rs benchmark model.onnx model_int8.onnx
 quantize-rs quantize <MODEL> [OPTIONS]
 
 Options:
-  -o, --output <FILE>     Output path [default: model_quantized.onnx]
+  -o, --output <FILE>     Output path[default: model_quantized.onnx]
   -b, --bits <8|4>        Quantization bits [default: 8]
       --per-channel       Use per-channel quantization (better quality)
   -h, --help              Print help
@@ -299,6 +300,12 @@ cargo test test_int4_real_model -- --ignored --nocapture
 
 ---
 
+## Future work
+
+What is my planning?
+1. quantize x4 -> x8? working
+2. Other improvement? maybe
+---
 ## Contributing
 
 Contributions are welcome! Areas we'd love help with:
