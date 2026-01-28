@@ -20,6 +20,7 @@
 - **Complete CLI** - Batch processing, validation, benchmarking
 - **ONNX format** - Works with PyTorch, TensorFlow, etc.
 - **Config files** - YAML/TOML support for automation
+- **Calibration framework** - Accuracy optimization using (MinMax, Percentile, Entropy, MSE)
 
 ---
 
@@ -277,15 +278,6 @@ cargo test test_int4_real_model -- --ignored --nocapture
 - ✅ ResNet-18 (44.65 MB → 5.60 MB)
 - ✅ MNIST CNN (26 KB → 5.6 KB)
 - ✅ MobileNet (13.4 MB → 3.4 MB)
-
----
-
-## To-Do
-- **Calibration datasets** - Use sample data for optimal quantization ranges
-  - Percentile-based range selection
-  - Entropy minimization
-  - MSE optimization
-  - Industry-standard approach for production quantization
 
 ---
 
