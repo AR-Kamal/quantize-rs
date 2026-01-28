@@ -300,12 +300,6 @@ cargo test test_int4_real_model -- --ignored --nocapture
 
 ---
 
-## Future work
-
-What is my planning?
-1. quantize x4 -> x8? working
-2. Other improvement? maybe
----
 ## Contributing
 
 Contributions are welcome! Areas we'd love help with:
