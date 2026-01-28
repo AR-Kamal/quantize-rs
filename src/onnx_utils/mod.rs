@@ -1,6 +1,5 @@
 //src/onnx_utils/mod.rs
 //! ONNX model utilities
-use crate::quantization::QuantParams;
 use anyhow::{Context, Result};
 use protobuf::Message;
 use std::fs;
@@ -19,6 +18,16 @@ pub struct ModelInfo {
     pub num_nodes: usize,
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
+}
+
+/// Information about a quantized weight tensor
+#[derive(Debug, Clone)]
+pub struct QuantizedWeightInfo {
+    pub name: String,
+    pub bits: u8,
+    pub scale: f32,
+    pub zero_point: i8,
+    pub original_length: usize,
 }
 
 impl OnnxModel {
@@ -112,56 +121,129 @@ impl OnnxModel {
     }
 
     pub fn save_quantized(
-        &mut self,
-        quantized_weights: &[(String, Vec<i8>, QuantParams)],
-        output_path: &str,
+        &mut self, 
+        quantized_data: &[(String, Vec<i8>, f32, i8, u8)], 
+        path: &str
     ) -> Result<()> {
-        use std::fs::File;
-        use std::io::Write;
-
-        // Get mutable graph
         let graph = self.proto.mut_graph();
-
-        // Replace each initializer with quantized version
-        for (name, quant_data, _params) in quantized_weights {
-            // Find the initializer with this name
-            for initializer in graph.mut_initializer().iter_mut() {
-                if initializer.get_name() == name {
-                    // Clear old float data
-                    initializer.clear_float_data();
-                    initializer.clear_raw_data();
-
-                    // Set data type to INT8 using proper enum
-                    initializer.set_data_type(onnx::onnx::TensorProto_DataType::INT8);
-
-                    // Convert Vec<i8> to bytes
-                    let bytes: Vec<u8> = quant_data.iter().map(|&v| v as u8).collect();
-
-                    // Set raw data
-                    initializer.set_raw_data(bytes);
-
-                    // TODO: Store scale and zero-point as separate tensors
-                    // (this is simplified - production would add these as initializers)
-
-                    break;
+        
+        for (name, quant_data, scale, zero_point, bits) in quantized_data {
+            if let Some(init) = graph.mut_initializer().iter_mut().find(|i| {
+                i.get_name() == name
+            }) {
+                // Clear existing data
+                init.clear_float_data();
+                init.clear_raw_data();
+                
+                // Store quantized data based on bits
+                let raw_bytes: Vec<u8> = if *bits == 4 {
+                    // INT4: Pack 2 values per byte for 8x compression
+                    use crate::quantization::pack_int4;
+                    pack_int4(quant_data)
+                } else {
+                    // INT8: Store as-is for 4x compression
+                    quant_data.iter().map(|&v| v as u8).collect()
+                };
+                
+                init.set_raw_data(raw_bytes);
+                init.set_data_type(onnx::onnx::TensorProto_DataType::INT8);
+                
+                // Encode metadata in name
+                // Format: original_name__qINT{bits}_s{scale}_z{zero_point}_len{original_length}
+                let current_name = init.get_name();
+                if !current_name.contains("__qINT") {
+                    let original_len = quant_data.len();
+                    let metadata = format!(
+                        "__qINT{}_s{:.8}_z{}_len{}", 
+                        bits, 
+                        scale, 
+                        zero_point,
+                        original_len
+                    );
+                    init.set_name(format!("{}{}", current_name, metadata));
                 }
             }
         }
 
-        // Serialize to bytes
-        let bytes = self
-            .proto
-            .write_to_bytes()
-            .context("Failed to serialize ONNX model")?;
-
-        // Write to file
-        let mut file = File::create(output_path)
-            .with_context(|| format!("Failed to create output file: {}", output_path))?;
-
-        file.write_all(&bytes)
-            .context("Failed to write ONNX model to file")?;
+        let mut file = std::fs::File::create(path)
+            .with_context(|| format!("Failed to create output file: {}", path))?;
+        
+        self.proto.write_to_writer(&mut file)
+            .context("Failed to write ONNX model")?;
 
         Ok(())
+    }
+
+    /// Load a quantized model and decode the quantization metadata
+    pub fn load_quantized_info(&self) -> Vec<QuantizedWeightInfo> {
+        let mut infos = Vec::new();
+        let graph = self.proto.get_graph();
+        
+        for init in graph.get_initializer() {
+            let name = init.get_name();
+            
+            // Check if this is a quantized tensor
+            if name.contains("__qINT") {
+                // Parse metadata from name
+                if let Some(metadata_start) = name.find("__qINT") {
+                    let metadata = &name[metadata_start..];
+                    
+                    // Extract bits
+                    let bits = if metadata.contains("__qINT4") {
+                        4
+                    } else if metadata.contains("__qINT8") {
+                        8
+                    } else {
+                        continue;
+                    };
+                    
+                    // Extract scale (format: _s{scale}_)
+                    let scale = if let Some(s_pos) = metadata.find("_s") {
+                        let scale_str = &metadata[s_pos + 2..];
+                        if let Some(end) = scale_str.find('_') {
+                            scale_str[..end].parse::<f32>().unwrap_or(1.0)
+                        } else {
+                            1.0
+                        }
+                    } else {
+                        1.0
+                    };
+                    
+                    // Extract zero_point (format: _z{zero_point}_)
+                    let zero_point = if let Some(z_pos) = metadata.find("_z") {
+                        let zp_str = &metadata[z_pos + 2..];
+                        if let Some(end) = zp_str.find('_') {
+                            zp_str[..end].parse::<i8>().unwrap_or(0)
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    };
+                    
+                    // Extract original length
+                    let original_len = if let Some(len_pos) = metadata.find("_len") {
+                        let len_str = &metadata[len_pos + 4..];
+                        len_str.parse::<usize>().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    
+                    // Get original name (before metadata)
+                    let original_name = name[..metadata_start].to_string();
+                    
+                    infos.push(QuantizedWeightInfo {
+                        name: original_name,
+                        bits,
+                        scale,
+                        zero_point,
+                        original_length: original_len,
+                    });
+                }
+            }
+        }
+        
+        infos
     }
 }
 

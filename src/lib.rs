@@ -7,9 +7,11 @@
 pub mod errors;
 pub mod onnx_utils;
 pub mod quantization;
+pub mod config;  
 
-pub use onnx_utils::{ModelInfo, OnnxModel, WeightTensor};
-pub use quantization::{QuantConfig, QuantMode, QuantParams, Quantizer};
+pub use onnx_utils::{ModelInfo, OnnxModel, WeightTensor, QuantizedWeightInfo};
+pub use quantization::{Quantizer, QuantConfig, QuantMode, QuantParams, pack_int4, unpack_int4};
+pub use config::Config;
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

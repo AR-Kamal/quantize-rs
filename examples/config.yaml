@@ -1,0 +1,25 @@
+# Example quantize-rs configuration file (YAML format)
+
+# Global settings (applied to all models unless overridden)
+bits: 8
+per_channel: true
+
+# Individual model configurations
+models:
+  - input: models/resnet18.onnx
+    output: quantized/resnet18_int8.onnx
+  
+  - input: models/mobilenet.onnx
+    output: quantized/mobilenet_int8.onnx
+    per_channel: false  # Override global setting
+  
+  - input: models/efficientnet.onnx
+    output: quantized/efficientnet_int8.onnx
+    skip_existing: true
+
+# Batch processing (optional)
+batch:
+  input_dir: "models/*.onnx"
+  output_dir: quantized_batch/
+  skip_existing: true
+  continue_on_error: true

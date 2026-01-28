@@ -20,7 +20,18 @@ fn quantize_model(input_path: &str, output_path: &str) -> Result<()> {
     let mut quantized_data = Vec::new();
     for weight in &weights {
         let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())?;
-        quantized_data.push((weight.name.clone(), quantized.data, quantized.params));
+        
+        // Get scale and zero_point
+        let (scale, zero_point) = quantized.get_scale_zero_point();
+        let bits = quantized.bits();
+        
+        quantized_data.push((
+            weight.name.clone(),
+            quantized.data(),
+            scale,
+            zero_point,
+            bits,
+        ));
     }
 
     model.save_quantized(&quantized_data, output_path)?;

@@ -1,3 +1,17 @@
 /target
 *.onnx 
+Cargo.lock
 examples/*.onnx
+test-config.yaml
+/quantized_batch
+/quantized_perchannel
+/config_output
+/test_models
+/output
+!examples/*.yaml
+!examples/config.yaml
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
