@@ -1,19 +1,16 @@
-// src/cli/commands.rs
-
-//! Command implementations
+use crate::config::Config;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
-use crate::config::Config;
 use indicatif::{ProgressBar, ProgressStyle};
 use quantize_rs::onnx_utils::OnnxModel;
 use quantize_rs::quantization::{QuantConfig, Quantizer};
+use quantize_rs::calibration::{CalibrationDataset, ActivationEstimator, methods::CalibrationMethod};
 
 pub fn quantize(input: &str, output: &str, bits: u8, per_channel: bool) -> Result<()> {
     println!("Loading model: {}", input.bold());
 
-    // Load model
     let mut model = OnnxModel::load(input)?;
     let info = model.info();
 
@@ -21,7 +18,6 @@ pub fn quantize(input: &str, output: &str, bits: u8, per_channel: bool) -> Resul
     println!("  Nodes: {}", info.num_nodes);
     println!();
 
-    // Extract weights
     println!("Extracting weights...");
     let weights = model.extract_weights();
     let original_size = model.total_size_bytes();
@@ -38,17 +34,19 @@ pub fn quantize(input: &str, output: &str, bits: u8, per_channel: bool) -> Resul
     );
     println!();
 
-    // Quantize with progress bar
     if per_channel {
         println!("Quantizing to INT{} (per-channel)...", bits);
     } else {
         println!("Quantizing to INT{}...", bits);
     }
 
-    let config = QuantConfig { bits, per_channel };
+    let config = QuantConfig { 
+        bits, 
+        per_channel,
+        calibration_method: None,
+    };
     let quantizer = Quantizer::new(config);
 
-    // Create progress bar
     let pb = ProgressBar::new(weights.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -71,7 +69,6 @@ pub fn quantize(input: &str, output: &str, bits: u8, per_channel: bool) -> Resul
         }
         total_error += error;
 
-        // Get quantization parameters
         let (scale, zero_point) = quantized.get_scale_zero_point();
         let bits_used = quantized.bits();
         
@@ -114,12 +111,10 @@ pub fn quantize(input: &str, output: &str, bits: u8, per_channel: bool) -> Resul
     println!("  Avg MSE error:    {:.6}", avg_error);
     println!();
 
-    // Save the quantized model
     println!("Saving quantized model...");
     model.save_quantized(&quantized_data, output)?;
     println!("✓ Saved to: {}", output.green());
 
-    // Optional: Validate saved model
     println!("Validating saved model...");
     match OnnxModel::load(output) {
         Ok(_) => println!("✓ Model validation passed"),
@@ -133,11 +128,9 @@ pub fn info(input: &str) -> Result<()> {
     println!("Model Information: {}", input.bold());
     println!();
 
-    // Load model
     let model = OnnxModel::load(input)?;
     let info = model.info();
 
-    // Display info
     println!("  Name:       {}", info.name.cyan());
     println!("  Version:    {}", info.version);
     println!("  Nodes:      {}", info.num_nodes);
@@ -166,7 +159,6 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     println!("Quantized: {}", quantized.yellow());
     println!();
 
-    // Load both models
     println!("Loading models...");
     let original_model = OnnxModel::load(original).context("Failed to load original model")?;
     let quantized_model = OnnxModel::load(quantized).context("Failed to load quantized model")?;
@@ -174,14 +166,12 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     let original_info = original_model.info();
     let quantized_info = quantized_model.info();
 
-    // Extract weights
     let original_weights = original_model.extract_weights();
     let quantized_weights = quantized_model.extract_weights();
 
     let original_size = original_model.total_size_bytes();
     let quantized_size = quantized_model.total_size_bytes();
 
-    // Get file sizes
     let original_file_size = std::fs::metadata(original)
         .context("Failed to read original file")?
         .len();
@@ -192,7 +182,6 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     println!("✓ Models loaded");
     println!();
 
-    // Compare structure
     println!("{}", "Model Structure:".bold());
     println!(
         "  Nodes:       {} vs {}",
@@ -210,7 +199,6 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     );
     println!();
 
-    // Compare weights
     println!("{}", "Weight Analysis:".bold());
     println!(
         "  Tensors:     {} vs {}",
@@ -227,7 +215,6 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     println!("  Compression: {:.2}x smaller", compression);
     println!();
 
-    // File size comparison
     println!("{}", "File Size:".bold());
     println!(
         "  Original:    {:.2} MB",
@@ -246,10 +233,8 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     println!("  Ratio:       {:.2}x", file_compression);
     println!();
 
-    // Summary
     println!("{}", "Summary:".bold().green());
 
-    // Check if structure matches
     let structure_match = original_info.num_nodes == quantized_info.num_nodes
         && original_info.inputs.len() == quantized_info.inputs.len()
         && original_info.outputs.len() == quantized_info.outputs.len();
@@ -283,6 +268,133 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn calibrate(
+    input_path: &str,
+    data_path: &str,
+    output_path: &str,
+    bits: u8,
+    per_channel: bool,
+    method_str: &str,
+) -> Result<()> {
+    println!("{}", "Calibration-Based Quantization".bold());
+    println!("{}", "=".repeat(60));
+    println!();
+    
+    // Parse calibration method
+    let method = match method_str.to_lowercase().as_str() {
+        "minmax" => CalibrationMethod::MinMax,
+        "percentile" => CalibrationMethod::Percentile(99.9),
+        "entropy" => CalibrationMethod::Entropy,
+        "mse" => CalibrationMethod::MSE,
+        _ => {
+            eprintln!("Unknown method: {}. Using percentile.", method_str);
+            CalibrationMethod::Percentile(99.9)
+        }
+    };
+    
+    println!("Method: {}", method.name().cyan());
+    println!();
+    
+    // Load calibration data
+    println!("Loading calibration data: {}", data_path);
+    let dataset = if data_path.ends_with(".npy") {
+        CalibrationDataset::from_numpy(data_path)?
+    } else {
+        // Generate random data for testing
+        println!("⚠  No .npy file provided, using random data for demo");
+        CalibrationDataset::random(vec![1, 28, 28], 100, (0.0, 1.0))
+    };
+    
+    println!("✓ Loaded {} samples", dataset.len());
+    println!("  Sample shape: {:?}", dataset.sample_shape());
+    println!();
+    
+    // Load model
+    println!("Loading model: {}", input_path);
+    let mut model = OnnxModel::load(input_path)?;
+    println!("✓ Model loaded");
+    println!();
+    
+    // Run calibration
+    println!("Running calibration...");
+    let mut estimator = ActivationEstimator::new(model);
+    estimator.calibrate(&dataset)?;
+    println!();
+    
+    // Get calibration statistics
+    let calib_stats = estimator.get_layer_stats()
+        .into_iter()
+        .map(|(k, v)| (k, v.clone()))
+        .collect();
+    
+    // Extract weights
+    println!("Extracting weights...");
+    model = estimator.into_model();
+    let weights = model.extract_weights();
+    println!("✓ Found {} weight tensors", weights.len());
+    println!();
+    
+    // Quantize with calibration
+    println!("Quantizing with calibration...");
+    let config = QuantConfig {
+        bits,
+        per_channel,
+        calibration_method: Some(method),
+    };
+    let quantizer = Quantizer::with_calibration(config, calib_stats);
+    
+    let pb = ProgressBar::new(weights.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} tensors ({eta})")
+            .expect("Failed to set progress bar template")
+            .progress_chars("#>-")
+    );
+    
+    let mut quantized_data = Vec::new();
+    let mut total_error = 0.0;
+    
+    for weight in &weights {
+        let quantized = quantizer.quantize_tensor_with_name(
+            &weight.name,
+            &weight.data,
+            weight.shape.clone(),
+        )?;
+        
+        let error = quantized.quantization_error(&weight.data);
+        total_error += error;
+        
+        let (scale, zero_point) = quantized.get_scale_zero_point();
+        let bits_used = quantized.bits();
+        
+        quantized_data.push((
+            weight.name.clone(),
+            quantized.data(),
+            scale,
+            zero_point,
+            bits_used,
+        ));
+        
+        pb.inc(1);
+    }
+    
+    pb.finish_with_message("done");
+    
+    let avg_error = total_error / weights.len() as f32;
+    
+    println!();
+    println!("Results:");
+    println!("  Avg MSE error: {:.8}", avg_error);
+    println!();
+    
+    // Save
+    println!("Saving calibrated model...");
+    model.save_quantized(&quantized_data, output_path)?;
+    println!("✓ Saved to: {}", output_path.green());
+    
+    Ok(())
+}
+
 pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Result<()> {
     println!("{}", "Validating Quantized Model".bold());
     println!("{}", "=".repeat(60));
@@ -292,7 +404,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     println!("Quantized: {}", quantized_path.yellow());
     println!();
     
-    // Step 1: Load both models
     println!("Loading models...");
     let original_model = OnnxModel::load(original_path)
         .context("Failed to load original model")?;
@@ -302,7 +413,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     println!("✓ Both models loaded successfully");
     println!();
     
-    // Step 2: Compare structure
     println!("{}", "Structure Validation".bold());
     println!("{}", "-".repeat(60));
     
@@ -311,7 +421,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     
     let mut validation_passed = true;
     
-    // Check nodes
     if original_info.num_nodes == quantized_info.num_nodes {
         println!("✓ Node count matches: {}", original_info.num_nodes);
     } else {
@@ -320,7 +429,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
         validation_passed = false;
     }
     
-    // Check inputs
     if original_info.inputs.len() == quantized_info.inputs.len() {
         println!("✓ Input count matches: {}", original_info.inputs.len());
     } else {
@@ -329,7 +437,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
         validation_passed = false;
     }
     
-    // Check outputs
     if original_info.outputs.len() == quantized_info.outputs.len() {
         println!("✓ Output count matches: {}", original_info.outputs.len());
     } else {
@@ -340,7 +447,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     
     println!();
     
-    // Step 3: Compare weights
     println!("{}", "Weight Validation".bold());
     println!("{}", "-".repeat(60));
     
@@ -355,7 +461,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
         println!("   (This might be expected if quantization added/merged tensors)");
     }
     
-    // Check shapes match
     let mut shape_mismatches = 0;
     for (orig, quant) in original_weights.iter().zip(quantized_weights.iter()) {
         if orig.shape != quant.shape {
@@ -374,7 +479,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
         validation_passed = false;
     }
     
-    // Check for suspicious patterns in quantized model
     println!();
     println!("Checking for numerical issues...");
 
@@ -383,12 +487,10 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     let mut suspicious = false;
 
     for weight in &quantized_weights {
-        // Check if all values are zero
         if weight.data.iter().all(|&v| v == 0.0) {
             all_zeros += 1;
         }
         
-        // Check if all values are the same (might indicate bad quantization)
         if weight.data.len() > 1 {
             let first = weight.data[0];
             if weight.data.iter().all(|&v| v == first) {
@@ -397,7 +499,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
         }
     }
 
-    // Small tensors (like biases) can legitimately be all zeros
     if all_zeros > original_weights.len() / 4 {
         println!("⚠  {} tensors are all zeros (might indicate issues)", all_zeros);
         suspicious = true;
@@ -416,7 +517,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     
     println!();
     
-    // Step 4: Size comparison
     println!("{}", "Size Analysis".bold());
     println!("{}", "-".repeat(60));
     
@@ -437,7 +537,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     
     println!();
     
-    // Step 5: Detailed per-layer analysis (if requested)
     if detailed {
         println!("{}", "Detailed Layer Analysis".bold());
         println!("{}", "-".repeat(60));
@@ -474,7 +573,6 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
         println!();
     }
     
-    // Final verdict
     println!("{}", "=".repeat(60));
     if validation_passed {
         println!("{}", "✓ VALIDATION PASSED".green().bold());
@@ -503,7 +601,6 @@ pub fn batch(
     println!("{}", "=".repeat(60));
     println!();
 
-    // Create output directory if it doesn't exist
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("Failed to create output directory: {}", output_dir))?;
 
@@ -511,14 +608,11 @@ pub fn batch(
     println!("Quantization: INT{}{}", bits, if per_channel { " (per-channel)" } else { "" });
     println!();
 
-    // Expand wildcards and collect all input files
     let mut input_files = Vec::new();
     for pattern in inputs {
-        // Check if it's a direct file path
         if Path::new(pattern).exists() {
             input_files.push(PathBuf::from(pattern));
         } else {
-            // Try glob pattern
             match glob::glob(pattern) {
                 Ok(paths) => {
                     for path in paths.filter_map(Result::ok) {
@@ -542,7 +636,6 @@ pub fn batch(
     println!("Found {} models to process", input_files.len());
     println!();
 
-    // Process each model
     let mut results = Vec::new();
     let total = input_files.len();
 
@@ -550,7 +643,6 @@ pub fn batch(
         let input_str = input_path.to_string_lossy();
         let filename = input_path.file_name().unwrap().to_string_lossy();
         
-        // Generate output filename (add _int8 suffix)
         let output_filename = if let Some(stem) = input_path.file_stem() {
             format!("{}_int8.onnx", stem.to_string_lossy())
         } else {
@@ -563,7 +655,6 @@ pub fn batch(
         println!("{}", format!("[{}/{}]", idx + 1, total).bold());
         println!("Processing: {}", filename.cyan());
 
-        // Skip if already exists
         if skip_existing && output_path.exists() {
             println!("Skipped (already exists)");
             println!();
@@ -571,7 +662,6 @@ pub fn batch(
             continue;
         }
 
-        // Quantize the model
         match quantize(&input_str, &output_str, bits, per_channel) {
             Ok(_) => {
                 println!("✓ Success");
@@ -592,7 +682,6 @@ pub fn batch(
         }
     }
 
-    // Summary
     println!("{}", "=".repeat(60));
     println!("{}", "Batch Summary".bold());
     println!("{}", "=".repeat(60));
@@ -618,7 +707,6 @@ pub fn batch(
     }
     println!();
 
-    // Show details if there were failures
     if failed_count > 0 {
         println!("Failed models:");
         for (input, status) in &results {
@@ -645,12 +733,10 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
     println!("{}", "=".repeat(60));
     println!();
 
-    // Load config
     println!("Loading config: {}", config_path.cyan());
     let config = Config::from_file(config_path)
         .context("Failed to load configuration file")?;
 
-    // Validate
     config.validate()
         .context("Config validation failed")?;
 
@@ -662,7 +748,6 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
         println!();
     }
 
-    // Show config summary
     println!("Global settings:");
     println!("  Bits: {}", config.bits);
     println!("  Per-channel: {}", config.per_channel);
@@ -670,7 +755,6 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
 
     let mut total_tasks = 0;
 
-    // Process individual models
     if !config.models.is_empty() {
         println!("{}", format!("Individual Models: {}", config.models.len()).bold());
         println!("{}", "-".repeat(60));
@@ -700,7 +784,6 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
                     .with_context(|| format!("Failed to create output directory: {:?}", parent))?;
             }
 
-            // Actually quantize
             match quantize(&model_config.input, &model_config.output, bits, per_channel) {
                 Ok(_) => {
                     println!("✓ Success");
@@ -714,7 +797,6 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
         println!();
     }
 
-    // Process batch
     if let Some(batch_config) = &config.batch {
         println!("{}", "Batch Processing".bold());
         println!("{}", "-".repeat(60));
@@ -726,7 +808,6 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
             println!("  Output: {}", batch_config.output_dir);
             println!("  (dry run)");
         } else {
-            // Expand input_dir into file list
             let inputs = vec![batch_config.input_dir.clone()];
             
             batch(
@@ -740,7 +821,6 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
         }
     }
 
-    // Summary
     println!();
     println!("{}", "=".repeat(60));
     if dry_run {

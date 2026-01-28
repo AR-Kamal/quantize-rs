@@ -1,16 +1,13 @@
-//src/onnx_utils/mod.rs
 //! ONNX model utilities
 use anyhow::{Context, Result};
 use protobuf::Message;
 use std::fs;
 use std::io::Read;
 
-/// ONNX model wrapper
 pub struct OnnxModel {
     proto: onnx::onnx::ModelProto,
 }
 
-/// Model information
 #[derive(Debug)]
 pub struct ModelInfo {
     pub name: String,
@@ -20,7 +17,6 @@ pub struct ModelInfo {
     pub outputs: Vec<String>,
 }
 
-/// Information about a quantized weight tensor
 #[derive(Debug, Clone)]
 pub struct QuantizedWeightInfo {
     pub name: String,
@@ -31,10 +27,7 @@ pub struct QuantizedWeightInfo {
 }
 
 impl OnnxModel {
-    /// Load ONNX model from file
-    /// Load ONNX model from file
     pub fn load(path: &str) -> Result<Self> {
-        // Read file bytes
         let mut file =
             fs::File::open(path).with_context(|| format!("Failed to open ONNX file: {}", path))?;
 
@@ -42,7 +35,6 @@ impl OnnxModel {
         file.read_to_end(&mut buffer)
             .context("Failed to read ONNX file")?;
 
-        // Parse using protobuf - create instance first, then merge
         let mut proto = onnx::onnx::ModelProto::new();
         proto
             .merge_from_bytes(&buffer)
@@ -51,7 +43,6 @@ impl OnnxModel {
         Ok(Self { proto })
     }
 
-    /// Get model information  
     pub fn info(&self) -> ModelInfo {
         let graph = self.proto.get_graph();
 
@@ -76,23 +67,18 @@ impl OnnxModel {
         }
     }
 
-    /// Extract all weights from the model
-    /// Weights are stored in graph.initializer
     pub fn extract_weights(&self) -> Vec<WeightTensor> {
         let mut weights = Vec::new();
         let graph = self.proto.get_graph();
 
-        // Iterate through all initializers (this is where weights are stored!)
         for initializer in graph.get_initializer() {
             let name = initializer.get_name().to_string();
 
-            // Get shape
             let shape: Vec<usize> = initializer.get_dims().iter().map(|&d| d as usize).collect();
 
-            // Extract float32 data
             // ONNX stores data in different formats depending on data_type
             let data = if initializer.has_raw_data() {
-                // Raw data format (more efficient for large tensors)
+                // Raw data format (for large tensors)
                 let raw = initializer.get_raw_data();
                 let float_data: Vec<f32> = raw
                     .chunks_exact(4)
@@ -100,7 +86,6 @@ impl OnnxModel {
                     .collect();
                 float_data
             } else {
-                // Float array format
                 initializer.get_float_data().to_vec()
             };
 
@@ -112,7 +97,6 @@ impl OnnxModel {
         weights
     }
 
-    /// Get total model size in bytes
     pub fn total_size_bytes(&self) -> usize {
         self.extract_weights()
             .iter()
@@ -131,25 +115,19 @@ impl OnnxModel {
             if let Some(init) = graph.mut_initializer().iter_mut().find(|i| {
                 i.get_name() == name
             }) {
-                // Clear existing data
                 init.clear_float_data();
                 init.clear_raw_data();
                 
-                // Store quantized data based on bits
                 let raw_bytes: Vec<u8> = if *bits == 4 {
-                    // INT4: Pack 2 values per byte for 8x compression
                     use crate::quantization::pack_int4;
                     pack_int4(quant_data)
                 } else {
-                    // INT8: Store as-is for 4x compression
                     quant_data.iter().map(|&v| v as u8).collect()
                 };
                 
                 init.set_raw_data(raw_bytes);
                 init.set_data_type(onnx::onnx::TensorProto_DataType::INT8);
                 
-                // Encode metadata in name
-                // Format: original_name__qINT{bits}_s{scale}_z{zero_point}_len{original_length}
                 let current_name = init.get_name();
                 if !current_name.contains("__qINT") {
                     let original_len = quant_data.len();
@@ -174,7 +152,6 @@ impl OnnxModel {
         Ok(())
     }
 
-    /// Load a quantized model and decode the quantization metadata
     pub fn load_quantized_info(&self) -> Vec<QuantizedWeightInfo> {
         let mut infos = Vec::new();
         let graph = self.proto.get_graph();
@@ -182,13 +159,10 @@ impl OnnxModel {
         for init in graph.get_initializer() {
             let name = init.get_name();
             
-            // Check if this is a quantized tensor
             if name.contains("__qINT") {
-                // Parse metadata from name
                 if let Some(metadata_start) = name.find("__qINT") {
                     let metadata = &name[metadata_start..];
                     
-                    // Extract bits
                     let bits = if metadata.contains("__qINT4") {
                         4
                     } else if metadata.contains("__qINT8") {
@@ -197,7 +171,6 @@ impl OnnxModel {
                         continue;
                     };
                     
-                    // Extract scale (format: _s{scale}_)
                     let scale = if let Some(s_pos) = metadata.find("_s") {
                         let scale_str = &metadata[s_pos + 2..];
                         if let Some(end) = scale_str.find('_') {
@@ -209,7 +182,6 @@ impl OnnxModel {
                         1.0
                     };
                     
-                    // Extract zero_point (format: _z{zero_point}_)
                     let zero_point = if let Some(z_pos) = metadata.find("_z") {
                         let zp_str = &metadata[z_pos + 2..];
                         if let Some(end) = zp_str.find('_') {
@@ -221,7 +193,6 @@ impl OnnxModel {
                         0
                     };
                     
-                    // Extract original length
                     let original_len = if let Some(len_pos) = metadata.find("_len") {
                         let len_str = &metadata[len_pos + 4..];
                         len_str.parse::<usize>().unwrap_or(0)
@@ -229,7 +200,6 @@ impl OnnxModel {
                         0
                     };
                     
-                    // Get original name (before metadata)
                     let original_name = name[..metadata_start].to_string();
                     
                     infos.push(QuantizedWeightInfo {
@@ -247,7 +217,6 @@ impl OnnxModel {
     }
 }
 
-/// A weight tensor extracted from the model
 #[derive(Debug, Clone)]
 pub struct WeightTensor {
     pub name: String,

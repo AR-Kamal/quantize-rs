@@ -7,9 +7,7 @@
 [![Downloads](https://img.shields.io/crates/d/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**quantize-rs** reduces neural network size by up to **8x** while preserving accuracy. Convert float32 weights to INT8/INT4 with advanced per-channel quantization and custom packed storage.
-
-> NOTE: THE LATEST UPDATE IS NOT PUBLISHED YET, THE CURRENT VERSION OF quantize-rs STILL 0.1.0
+**quantize-rs** reduces neural network size by up to **8x** while preserving accuracy. Convert float32 weights to INT8/INT4 with advanced per-channel quantization, calibration framework and custom packed storage.
 
 ---
 

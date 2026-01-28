@@ -1,9 +1,9 @@
 [package]
 name = "quantize-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Abdul Rahman Kamal <abdulrahmandev141@gmail.com>"]
-description = "Simple neural network quantization toolkit, up to 4x smaller models with minimal accuracy loss"
+description = "Neural network quantization toolkit with calibration support - up to 8x compression with minimal accuracy loss"
 license = "MIT"
 repository = "https://github.com/AR-Kamal/quantize-rs"
 homepage = "https://github.com/AR-Kamal/quantize-rs"
@@ -17,6 +17,7 @@ exclude = ["*.onnx", "examples/*.onnx"]
 tract-onnx = "0.21"
 tract-core = "0.21"
 glob = "0.3"
+rand = "0.8"
 
 # ONNX model parsing
 onnx = "0.1.0"
@@ -24,7 +25,7 @@ prost = "0.12"
 protobuf = "1.7" 
 
 # Tensor operations
-ndarray = "0.16"
+ndarray = "0.15"
 ndarray-npy = "0.8"
 image = "0.25"
 

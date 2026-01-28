@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "quantize-rs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "approx",
@@ -1503,11 +1503,12 @@ dependencies = [
  "glob",
  "image",
  "indicatif",
- "ndarray 0.16.1",
+ "ndarray 0.15.6",
  "ndarray-npy",
  "onnx",
  "prost 0.12.6",
  "protobuf",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "serde_yaml",

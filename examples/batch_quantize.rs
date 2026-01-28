@@ -21,7 +21,6 @@ fn quantize_model(input_path: &str, output_path: &str) -> Result<()> {
     for weight in &weights {
         let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())?;
         
-        // Get scale and zero_point
         let (scale, zero_point) = quantized.get_scale_zero_point();
         let bits = quantized.bits();
         
@@ -43,17 +42,14 @@ fn quantize_model(input_path: &str, output_path: &str) -> Result<()> {
 fn main() -> Result<()> {
     println!("=== Batch Quantization Example ===\n");
 
-    // List of models to quantize
     let models = vec![
         ("mnist.onnx", "mnist_int8.onnx"),
         ("resnet18-v1-7.onnx", "resnet18_int8.onnx"),
-        // Add more models here
     ];
 
     println!("Quantizing {} models...\n", models.len());
 
     for (input, output) in models {
-        // Check if file exists
         if !Path::new(input).exists() {
             println!("⚠️  Skipping {} (file not found)", input);
             continue;
