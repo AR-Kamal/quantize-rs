@@ -7,7 +7,7 @@
 [![Downloads](https://img.shields.io/crates/d/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**quantize-rs** reduces neural network size by up to **8x** while preserving accuracy. Convert float32 weights to INT8/INT4 with advanced per-channel quantization, calibration framework and custom packed storage.
+**quantize-rs** reduces neural network size by up to **8x** while preserving accuracy. Convert float32 weights to INT8/INT4 with advanced per-channel quantization, calibration framework, and custom packed storage.
 
 ---
 
@@ -15,12 +15,12 @@
 
 - **INT8 & INT4 quantization** - 4x to 8x compression
 - **Per-channel quantization** - 40-60% error reduction vs per-tensor
+- **Calibration framework** - Statistical optimization (MinMax, Percentile, Entropy, MSE)
 - **Custom packed storage** - True 8x compression for INT4
 - **Fast** - Pure Rust, no Python dependency
 - **Complete CLI** - Batch processing, validation, benchmarking
 - **ONNX format** - Works with PyTorch, TensorFlow, etc.
 - **Config files** - YAML/TOML support for automation
-- **Calibration framework** - Accuracy optimization using (MinMax, Percentile, Entropy, MSE)
 
 ---
 
@@ -33,7 +33,7 @@ cargo install quantize-rs
 
 Or build from source:
 ```bash
-git clone https://github.com/yourusername/quantize-rs
+git clone https://github.com/AR-Kamal/quantize-rs
 cd quantize-rs
 cargo build --release
 ```
@@ -48,6 +48,9 @@ quantize-rs quantize model.onnx -o model_int4.onnx --bits 4
 
 # Per-channel for better quality
 quantize-rs quantize model.onnx -o model_int8.onnx --per-channel
+
+# Calibration-based quantization
+quantize-rs calibrate model.onnx --data calib.npy -o model_calibrated.onnx --bits 4 --method percentile
 
 # Validate quantized model
 quantize-rs validate model.onnx model_int8.onnx
@@ -70,7 +73,7 @@ quantize-rs benchmark model.onnx model_int8.onnx
 | **INT4** | 5.60 MB | 8.0x | 0.000907 | High compression |
 | **INT4 Per-Channel** | 5.60 MB | 8.0x | 0.000862 | 5% better |
 
-**Real file sizes achieved with custom packed storage format!**
+Real file sizes achieved with custom packed storage format.
 
 ---
 
@@ -78,12 +81,12 @@ quantize-rs benchmark model.onnx model_int8.onnx
 
 ### Commands
 
-#### `quantize` - Quantize a model
+#### quantize - Quantize a model
 ```bash
 quantize-rs quantize <MODEL> [OPTIONS]
 
 Options:
-  -o, --output <FILE>     Output path[default: model_quantized.onnx]
+  -o, --output <FILE>     Output path [default: model_quantized.onnx]
   -b, --bits <8|4>        Quantization bits [default: 8]
       --per-channel       Use per-channel quantization (better quality)
   -h, --help              Print help
@@ -100,7 +103,32 @@ quantize-rs quantize resnet18.onnx -o resnet18_int4.onnx --bits 4 --per-channel
 
 ---
 
-#### `batch` - Process multiple models
+#### calibrate - Calibration-based quantization
+```bash
+quantize-rs calibrate <MODEL> --data <DATA> [OPTIONS]
+
+Options:
+      --data <FILE>       Calibration data (NPY file or 'random')
+  -o, --output <FILE>     Output path [default: model_calibrated.onnx]
+  -b, --bits <8|4>        Quantization bits [default: 8]
+      --per-channel       Use per-channel quantization
+      --method <METHOD>   Calibration method [default: percentile]
+                          (minmax, percentile, entropy, mse)
+  -h, --help              Print help
+```
+
+**Examples:**
+```bash
+# Calibrate with sample data
+quantize-rs calibrate model.onnx --data calibration.npy -o model_cal.onnx --bits 4 --method percentile
+
+# Use random data for testing
+quantize-rs calibrate model.onnx --data random -o model_cal.onnx --bits 8 --method entropy
+```
+
+---
+
+#### batch - Process multiple models
 ```bash
 quantize-rs batch <MODELS>... --output <DIR> [OPTIONS]
 
@@ -119,7 +147,7 @@ quantize-rs batch models/*.onnx --output quantized/ --bits 4 --per-channel
 
 ---
 
-#### `validate` - Verify quantized model
+#### validate - Verify quantized model
 ```bash
 quantize-rs validate <ORIGINAL> <QUANTIZED> [OPTIONS]
 
@@ -129,34 +157,37 @@ Options:
 
 **Example output:**
 ```
-✓ Structure Validation
-  ✓ Node count matches: 69
-  ✓ Input count matches: 9
-  ✓ Output count matches: 1
+Structure Validation
+------------------------------------------------------------
+  Node count matches: 69
+  Input count matches: 9
+  Output count matches: 1
 
-✓ Weight Validation
-  ✓ Weight tensor count matches: 102
-  ✓ All weight shapes match
-  ✓ No numerical issues detected
+Weight Validation
+------------------------------------------------------------
+  Weight tensor count matches: 102
+  All weight shapes match
+  No numerical issues detected
 
-✓ Size Analysis
-  Original:  44.65 MB
-  Quantized: 11.18 MB
-  Reduction: 75.0% (4.00x smaller)
+Size Analysis
+------------------------------------------------------------
+Original:  44.65 MB
+Quantized: 11.18 MB
+Reduction: 75.0% (4.00x smaller)
 
-✓ VALIDATION PASSED
+VALIDATION PASSED
 ```
 
 ---
 
-#### `benchmark` - Compare models
+#### benchmark - Compare models
 ```bash
 quantize-rs benchmark <ORIGINAL> <QUANTIZED>
 ```
 
 ---
 
-#### `config` - Run from config file
+#### config - Run from config file
 ```bash
 quantize-rs config <CONFIG_FILE> [--dry-run]
 ```
@@ -185,27 +216,43 @@ batch:
 
 ### Quantization Methods
 
-#### **Per-Tensor Quantization**
+#### Per-Tensor Quantization
+
 Uses global min/max for entire tensor:
 ```
 scale = (max - min) / 255
 quantized = round(value / scale) + zero_point
 ```
 
-#### **Per-Channel Quantization**
+#### Per-Channel Quantization
+
 Calculates separate scale/zero-point for each output channel:
+
 - **40-60% lower error** on Conv layers
 - Essential for INT4 quality
 - Handles varied weight distributions
 
-#### **INT4 Bit Packing**
+#### INT4 Bit Packing
+
 Stores 2 INT4 values per byte:
 ```
 Byte: [AAAA BBBB]
       ↑    ↑
       val1 val2
 ```
-True 8x compression with custom storage format!
+
+True 8x compression with custom storage format.
+
+### Calibration
+
+Calibration optimizes quantization ranges for better accuracy:
+
+- **MinMax**: Uses global min/max (baseline)
+- **Percentile**: Clips outliers at specified percentile (default: 99.9%)
+- **Entropy**: Minimizes KL divergence between original and quantized distributions
+- **MSE**: Minimizes mean squared error
+
+Calibration improves model accuracy without changing file size.
 
 ---
 
@@ -222,6 +269,7 @@ fn main() -> anyhow::Result<()> {
     let config = QuantConfig {
         bits: 4,                // INT4 for 8x compression
         per_channel: true,      // Better quality
+        calibration_method: None,
     };
     let quantizer = Quantizer::new(config);
     
@@ -256,11 +304,6 @@ fn main() -> anyhow::Result<()> {
 
 ## Testing
 
-### Download test models
-```bash
-bash scripts/download_test_models.sh
-```
-
 ### Test Coverage
 ```bash
 cargo test                    # Run all tests (30+ tests)
@@ -275,13 +318,16 @@ cargo test test_int4_real_model -- --ignored --nocapture
 ```
 
 **Tested on:**
-- ✅ ResNet-18 (44.65 MB → 5.60 MB)
-- ✅ MNIST CNN (26 KB → 5.6 KB)
-- ✅ MobileNet (13.4 MB → 3.4 MB)
+
+- ResNet-18 (44.65 MB to 5.60 MB)
+- MNIST CNN (26 KB to 5.6 KB)
+- MobileNet (13.4 MB to 3.4 MB)
 
 ---
 
 ## Future Features
+
+- Activation-based calibration (v2.0)
 - Mixed precision (INT8 + INT4)
 - Dynamic quantization (runtime)
 - Quantization-aware training (QAT) support
@@ -295,13 +341,15 @@ cargo test test_int4_real_model -- --ignored --nocapture
 ## Contributing
 
 Contributions are welcome! Areas we'd love help with:
-- **Calibration datasets** - Sample data loading and statistics
-- **More quantization methods** - Dynamic, mixed-precision
+
 - **Testing** - More model formats and edge cases
+- **Calibration** - Activation-based methods, better data loading
 - **Documentation** - Tutorials, guides, use cases
 - **Performance** - Optimization and benchmarking
+- **More quantization methods** - Dynamic, mixed-precision
 
 **Process:**
+
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/<feature's name>`)
 3. Add tests for new features
@@ -313,18 +361,20 @@ Contributions are welcome! Areas we'd love help with:
 ## Resources
 
 ### Papers & References
+
 - [Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference](https://arxiv.org/abs/1712.05877) - Google's INT8 quantization
 - [LUT-NN: Empower Efficient Neural Network Inference with Centroid Learning and Table Lookup](https://arxiv.org/abs/1911.02929) - INT4 techniques
 - [A White Paper on Neural Network Quantization](https://arxiv.org/abs/2106.08295) - Comprehensive overview
 
 ### Tools & Frameworks
+
 - [ONNX](https://onnx.ai/) - Open Neural Network Exchange
 - [TensorFlow Lite](https://www.tensorflow.org/lite/performance/post_training_quantization) - Mobile quantization
 - [PyTorch Quantization](https://pytorch.org/docs/stable/quantization.html) - PyTorch approach
 
 ---
 
-## 📄 License
+## License
 
 MIT License - see [LICENSE](LICENSE) for details.
 
@@ -343,3 +393,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 - **Issues**: [GitHub Issues](https://github.com/AR-Kamal/quantize-rs/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/AR-Kamal/quantize-rs/discussions)
 - **Author**: [@AR-Kamal](https://github.com/AR-Kamal)
+
