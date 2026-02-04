@@ -1,3 +1,4 @@
+//src/cli/commands.rs
 use crate::config::Config;
 
 use anyhow::{Context, Result};
@@ -311,13 +312,13 @@ pub fn calibrate(
     
     // Load model
     println!("Loading model: {}", input_path);
-    let mut model = OnnxModel::load(input_path)?;
+    let model = OnnxModel::load(input_path)?;
     println!("✓ Model loaded");
     println!();
     
     // Run calibration
     println!("Running calibration...");
-    let mut estimator = ActivationEstimator::new(model);
+    let mut estimator = ActivationEstimator::new(model, input_path)?;
     estimator.calibrate(&dataset)?;
     println!();
     
@@ -329,7 +330,7 @@ pub fn calibrate(
     
     // Extract weights
     println!("Extracting weights...");
-    model = estimator.into_model();
+    let mut model = estimator.into_model();
     let weights = model.extract_weights();
     println!("✓ Found {} weight tensors", weights.len());
     println!();

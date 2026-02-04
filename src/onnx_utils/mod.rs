@@ -1,8 +1,21 @@
-//! ONNX model utilities
+// src/onnx_utils/mod.rs
+//! ONNX model utilities — loading, weight extraction, quantized save (QDQ),
+//! graph connectivity validation, and quantized-model introspection.
+
+pub mod graph_builder;
+pub mod quantization_nodes;
+
 use anyhow::{Context, Result};
 use protobuf::Message;
 use std::fs;
 use std::io::Read;
+
+// Re-export so callers don't have to reach into submodules
+pub use graph_builder::ConnectivityReport;
+
+// ===========================================================================
+// Core types
+// ===========================================================================
 
 pub struct OnnxModel {
     proto: onnx::onnx::ModelProto,
@@ -25,6 +38,10 @@ pub struct QuantizedWeightInfo {
     pub zero_point: i8,
     pub original_length: usize,
 }
+
+// ===========================================================================
+// OnnxModel — load / inspect
+// ===========================================================================
 
 impl OnnxModel {
     pub fn load(path: &str) -> Result<Self> {
@@ -76,15 +93,11 @@ impl OnnxModel {
 
             let shape: Vec<usize> = initializer.get_dims().iter().map(|&d| d as usize).collect();
 
-            // ONNX stores data in different formats depending on data_type
             let data = if initializer.has_raw_data() {
-                // Raw data format (for large tensors)
                 let raw = initializer.get_raw_data();
-                let float_data: Vec<f32> = raw
-                    .chunks_exact(4)
+                raw.chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                    .collect();
-                float_data
+                    .collect()
             } else {
                 initializer.get_float_data().to_vec()
             };
@@ -103,119 +116,199 @@ impl OnnxModel {
             .map(|w| w.data.len() * std::mem::size_of::<f32>())
             .sum()
     }
+}
 
+// ===========================================================================
+// OnnxModel — quantized save (QDQ pattern, v0.3.0+)
+// ===========================================================================
+
+impl OnnxModel {
+    /// Save a quantized model using the QDQ (DequantizeLinear) pattern.
+    ///
+    /// **Signature is identical to v0.2.0** — existing callers (CLI, calibration
+    /// pipeline, examples) compile without changes.
+    ///
+    /// ### What changed internally
+    ///
+    /// v0.2.0 appended metadata to initializer names (e.g. `conv1.weight` →
+    /// `conv1.weight__qINT8_s0.001_z-3_len9408`) without updating the nodes that
+    /// reference them.  ONNX Runtime rejected these models on load.
+    ///
+    /// v0.3.0 inserts a `DequantizeLinear` node per weight.  The node's output
+    /// carries the **original** name, so every downstream node is unchanged.
+    /// Graph connectivity is preserved by construction, and the resulting model
+    /// loads and runs in ONNX Runtime.
+    ///
+    /// ### INT4 storage note
+    ///
+    /// `DequantizeLinear` requires INT8 input (opset < 21).  INT4-quantized values
+    /// ([-8, 7]) are stored as INT8 bytes.  Quantization *accuracy* is still
+    /// INT4-level; only the on-disk size is 4× instead of the 8× that bit-packing
+    /// would give.  True INT4 packing is a v0.4.0 target.
     pub fn save_quantized(
-        &mut self, 
-        quantized_data: &[(String, Vec<i8>, f32, i8, u8)], 
-        path: &str
+        &mut self,
+        quantized_data: &[(String, Vec<i8>, f32, i8, u8)],
+        path: &str,
     ) -> Result<()> {
-        let graph = self.proto.mut_graph();
-        
-        for (name, quant_data, scale, zero_point, bits) in quantized_data {
-            if let Some(init) = graph.mut_initializer().iter_mut().find(|i| {
-                i.get_name() == name
-            }) {
-                init.clear_float_data();
-                init.clear_raw_data();
-                
-                let raw_bytes: Vec<u8> = if *bits == 4 {
-                    use crate::quantization::pack_int4;
-                    pack_int4(quant_data)
-                } else {
-                    quant_data.iter().map(|&v| v as u8).collect()
-                };
-                
-                init.set_raw_data(raw_bytes);
-                init.set_data_type(onnx::onnx::TensorProto_DataType::INT8);
-                
-                let current_name = init.get_name();
-                if !current_name.contains("__qINT") {
-                    let original_len = quant_data.len();
-                    let metadata = format!(
-                        "__qINT{}_s{:.8}_z{}_len{}", 
-                        bits, 
-                        scale, 
-                        zero_point,
-                        original_len
-                    );
-                    init.set_name(format!("{}{}", current_name, metadata));
-                }
-            }
+        use graph_builder::{apply_qdq_transform, ensure_opset_version, QdqWeightInput};
+
+        // --- 1. Opset ≥ 13 (DequantizeLinear per-channel needs it) ---
+        ensure_opset_version(&mut self.proto, 13);
+
+        // --- 2. Persist per-weight bits in model metadata ---
+        //        load_quantized_info reads these back later.
+        //        If StringStringEntryProto is not available in your onnx crate
+        //        version, this block can be safely commented out; bits will
+        //        default to 8 in load_quantized_info.
+        for (name, _, _, _, bits) in quantized_data.iter() {
+            let mut prop = onnx::onnx::StringStringEntryProto::new();
+            prop.set_key(format!("quantize_rs.bits.{}", name));
+            prop.set_value(bits.to_string());
+            self.proto.mut_metadata_props().push(prop);
         }
 
+        // --- 3. Build QdqWeightInput slice ---
+        let inputs: Vec<QdqWeightInput> = quantized_data
+            .iter()
+            .map(|(name, values, scale, zp, bits)| QdqWeightInput {
+                original_name:    name.clone(),
+                quantized_values: values.clone(),
+                scale:            *scale,
+                zero_point:       *zp,
+                bits:             *bits,
+            })
+            .collect();
+
+        // --- 4. Apply QDQ transform to the graph ---
+        apply_qdq_transform(self.proto.mut_graph(), &inputs)?;
+
+        // --- 5. Write to disk ---
         let mut file = std::fs::File::create(path)
             .with_context(|| format!("Failed to create output file: {}", path))?;
-        
-        self.proto.write_to_writer(&mut file)
+
+        self.proto
+            .write_to_writer(&mut file)
             .context("Failed to write ONNX model")?;
 
         Ok(())
     }
+}
 
+// ===========================================================================
+// OnnxModel — validation
+// ===========================================================================
+
+impl OnnxModel {
+    /// Check that every node input in the graph resolves to a known tensor.
+    ///
+    /// A "known tensor" is one of:
+    ///   - a declared graph input
+    ///   - an initializer
+    ///   - the output of a node appearing earlier in the node list
+    ///
+    /// This is the exact check ONNX Runtime performs on load.  It's the check
+    /// that v0.2.0's `validate` command skipped, which is why the rename bug
+    /// went undetected.  Integrate `report.summary()` into the CLI validate
+    /// output alongside the existing structure / weight checks.
+    pub fn validate_connectivity(&self) -> ConnectivityReport {
+        graph_builder::validate_graph_connectivity(self.proto.get_graph())
+    }
+}
+
+// ===========================================================================
+// OnnxModel — quantized model introspection (v0.3.0 QDQ format)
+// ===========================================================================
+
+impl OnnxModel {
+    /// Extract metadata about quantized weights from a QDQ-format model.
+    ///
+    /// Looks for initializer triples:
+    ///   `{base}_quantized`, `{base}_scale`, `{base}_zp`
+    ///
+    /// Scale and zero-point values are read directly from the tensors.
+    /// Bit-width comes from `metadata_props` (written by `save_quantized`);
+    /// defaults to 8 if the metadata entry is missing.
     pub fn load_quantized_info(&self) -> Vec<QuantizedWeightInfo> {
-        let mut infos = Vec::new();
         let graph = self.proto.get_graph();
-        
-        for init in graph.get_initializer() {
+
+        let mut scale_map: std::collections::HashMap<String, f32> =
+            std::collections::HashMap::new();
+        let mut zp_map: std::collections::HashMap<String, i8> =
+            std::collections::HashMap::new();
+        let mut quant_bases: Vec<String> = Vec::new();
+
+        for init in graph.get_initializer().iter() {
             let name = init.get_name();
-            
-            if name.contains("__qINT") {
-                if let Some(metadata_start) = name.find("__qINT") {
-                    let metadata = &name[metadata_start..];
-                    
-                    let bits = if metadata.contains("__qINT4") {
-                        4
-                    } else if metadata.contains("__qINT8") {
-                        8
-                    } else {
-                        continue;
-                    };
-                    
-                    let scale = if let Some(s_pos) = metadata.find("_s") {
-                        let scale_str = &metadata[s_pos + 2..];
-                        if let Some(end) = scale_str.find('_') {
-                            scale_str[..end].parse::<f32>().unwrap_or(1.0)
-                        } else {
-                            1.0
-                        }
+
+            if let Some(base) = name.strip_suffix("_scale") {
+                // Scale is stored in float_data (rank-0 scalar)
+                let scale = if !init.get_float_data().is_empty() {
+                    init.get_float_data()[0]
+                } else {
+                    // Fallback: try raw_data as little-endian f32
+                    let raw = init.get_raw_data();
+                    if raw.len() >= 4 {
+                        f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])
                     } else {
                         1.0
-                    };
-                    
-                    let zero_point = if let Some(z_pos) = metadata.find("_z") {
-                        let zp_str = &metadata[z_pos + 2..];
-                        if let Some(end) = zp_str.find('_') {
-                            zp_str[..end].parse::<i8>().unwrap_or(0)
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    };
-                    
-                    let original_len = if let Some(len_pos) = metadata.find("_len") {
-                        let len_str = &metadata[len_pos + 4..];
-                        len_str.parse::<usize>().unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    
-                    let original_name = name[..metadata_start].to_string();
-                    
-                    infos.push(QuantizedWeightInfo {
-                        name: original_name,
-                        bits,
-                        scale,
-                        zero_point,
-                        original_length: original_len,
-                    });
+                    }
+                };
+                scale_map.insert(base.to_string(), scale);
+            } else if let Some(base) = name.strip_suffix("_zp") {
+                // Zero-point is a single raw byte
+                let zp = if !init.get_raw_data().is_empty() {
+                    init.get_raw_data()[0] as i8
+                } else {
+                    0
+                };
+                zp_map.insert(base.to_string(), zp);
+            } else if let Some(base) = name.strip_suffix("_quantized") {
+                quant_bases.push(base.to_string());
+            }
+        }
+
+        // Read bits from metadata_props (written by save_quantized)
+        let mut bits_map: std::collections::HashMap<String, u8> =
+            std::collections::HashMap::new();
+        for prop in self.proto.get_metadata_props().iter() {
+            if let Some(base) = prop.get_key().strip_prefix("quantize_rs.bits.") {
+                if let Ok(bits) = prop.get_value().parse::<u8>() {
+                    bits_map.insert(base.to_string(), bits);
                 }
             }
         }
-        
-        infos
+
+        // Assemble QuantizedWeightInfo from the three maps
+        quant_bases
+            .iter()
+            .map(|base| {
+                let scale = scale_map.get(base).copied().unwrap_or(1.0);
+                let zp = zp_map.get(base).copied().unwrap_or(0);
+                let bits = bits_map.get(base).copied().unwrap_or(8);
+
+                // Element count = product of dims on the _quantized tensor
+                let original_length = graph
+                    .get_initializer()
+                    .iter()
+                    .find(|i| i.get_name() == format!("{}_quantized", base))
+                    .map(|i| i.get_dims().iter().product::<i64>() as usize)
+                    .unwrap_or(0);
+
+                QuantizedWeightInfo {
+                    name: base.clone(),
+                    bits,
+                    scale,
+                    zero_point: zp,
+                    original_length,
+                }
+            })
+            .collect()
     }
 }
+
+// ===========================================================================
+// WeightTensor (unchanged from v0.2.0)
+// ===========================================================================
 
 #[derive(Debug, Clone)]
 pub struct WeightTensor {

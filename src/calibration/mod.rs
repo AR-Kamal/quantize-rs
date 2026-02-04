@@ -1,3 +1,4 @@
+// src/calibration/mod.rs
 use anyhow::{Context, Result, bail};
 use ndarray::{Array, IxDyn};
 use std::path::Path;

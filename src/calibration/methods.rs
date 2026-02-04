@@ -1,3 +1,4 @@
+// src/calibration/methods.rs
 #[derive(Debug, Clone, Copy)]
 pub enum CalibrationMethod {
     MinMax,

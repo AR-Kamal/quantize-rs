@@ -1,9 +1,9 @@
 [package]
 name = "quantize-rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Abdul Rahman Kamal <abdulrahmandev141@gmail.com>"]
-description = "Neural network quantization toolkit with calibration support - up to 8x compression with minimal accuracy loss"
+description = "Neural network quantization toolkit for ONNX models"
 license = "MIT"
 repository = "https://github.com/AR-Kamal/quantize-rs"
 homepage = "https://github.com/AR-Kamal/quantize-rs"
@@ -32,6 +32,9 @@ image = "0.25"
 # CLI interface
 clap = { version = "4.4", features = ["derive"] }
 
+# Python bindings
+pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"
@@ -43,8 +46,23 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 toml = "0.8"
 
+[features]
+python = ["pyo3"]
+
 [dev-dependencies]
 approx = "0.5"
+criterion = "0.5"
+
+# Maturin looks for this section when building Python wheels
+[package.metadata.maturin]
+python-source = "python"
+module-name = "quantize_rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
 
 [[bin]]
 name = "quantize-rs"
@@ -53,12 +71,7 @@ path = "src/main.rs"
 [lib]
 name = "quantize_rs"
 path = "src/lib.rs"
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
+crate-type = ["rlib", "cdylib"]
 
 [[example]]
 name = "basic_quantization"
@@ -67,3 +80,7 @@ path = "examples/basic_quantization.rs"
 [[example]]
 name = "batch_quantize"
 path = "examples/batch_quantize.rs"
+
+[[example]]
+name = "activation_calibration"
+path = "examples/activation_calibration.rs"

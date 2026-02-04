@@ -1,0 +1,46 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "quantize-rs"
+version = "0.3.0"
+description = "Neural network quantization toolkit for ONNX models"
+readme = "README_PYTHON.md"
+requires-python = ">=3.8"
+license = { text = "MIT OR Apache-2.0" }
+keywords = ["quantization", "onnx", "neural-networks", "machine-learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "onnxruntime>=1.16.0",
+    "onnx>=1.14.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/quantize-rs"
+Repository = "https://github.com/yourusername/quantize-rs"
+Documentation = "https://github.com/yourusername/quantize-rs#readme"
+
+[tool.maturin]
+features = ["python"]
+module-name = "quantize_rs"

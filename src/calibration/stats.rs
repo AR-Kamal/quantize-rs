@@ -68,7 +68,9 @@ impl ActivationStats {
             return self.min;
         }
         
-        let target_count = (self.count as f32 * p / 100.0) as usize;
+        // ceil, not truncation: for 5 elements at p=50, target rank must be 3
+        // (the actual median), not 2 (which would return the element below it).
+        let target_count = (self.count as f32 * p / 100.0).ceil() as usize;
         let mut cumulative = 0;
         
         for &(value, count) in &self.histogram {
