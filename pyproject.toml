@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "quantize-rs"
+name = "quantization-rs"
 version = "0.3.0"
 description = "Neural network quantization toolkit for ONNX models"
 readme = "README_PYTHON.md"
@@ -37,9 +37,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/quantize-rs"
-Repository = "https://github.com/yourusername/quantize-rs"
-Documentation = "https://github.com/yourusername/quantize-rs#readme"
+Homepage = "https://github.com/AR-Kamal/quantize-rs"
+Repository = "https://github.com/AR-Kamal/quantize-rs"
+Documentation = "https://github.com/AR-Kamal/quantize-rs#readme"
 
 [tool.maturin]
 features = ["python"]

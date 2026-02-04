@@ -12,7 +12,7 @@ Fast, accurate neural network quantization for ONNX models. Powered by Rust.
 ## Installation
 
 ```bash
-pip install quantize-rs
+pip install quantization-rs
 ```
 
 Or build from source:
@@ -246,7 +246,12 @@ A: Currently quantizes all weights. Per-layer selection coming in v0.4.0.
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions welcome! Areas we need help:
+
+- **Testing** - More model architectures and edge cases
+- **Documentation** - Tutorials, guides, examples
+- **Performance** - Optimization and profiling
+- **Features** - Dynamic quantization, mixed precision
 
 ## License
 

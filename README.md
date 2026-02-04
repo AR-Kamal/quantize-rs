@@ -2,8 +2,10 @@
 
 > Fast neural network quantization for ONNX models — now with Python support
 
+[![PyPI](https://img.shields.io/pypi/v/quantization-rs.svg)](https://pypi.org/project/quantization-rs/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/quantization-rs.svg)](https://pypi.org/project/quantization-rs/)
 [![Crates.io](https://img.shields.io/crates/v/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
-[![PyPI](https://img.shields.io/pypi/v/quantize-rs.svg)](https://pypi.org/project/quantize-rs/)
+[![Crates.io Downloads](https://img.shields.io/crates/d/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
 [![Documentation](https://docs.rs/quantize-rs/badge.svg)](https://docs.rs/quantize-rs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -13,7 +15,7 @@
 
 ## What's New in v0.3.0
 
-- **Python bindings** - Use from Python with `pip install quantize-rs`
+- **Python bindings** - Use from Python with `pip install quantization-rs`
 - **Activation-based calibration** - Real inference for 3× better accuracy vs weight-only
 - **ONNX Runtime compatibility** - Quantized models load and run in ONNX Runtime
 - **DequantizeLinear pattern** - Standard ONNX QDQ format for broad compatibility
@@ -38,7 +40,7 @@
 ### Python
 
 ```bash
-pip install quantize-rs
+pip install quantization-rs
 ```
 
 ```python
@@ -380,7 +382,7 @@ fn main() -> anyhow::Result<()> {
 ### Python
 
 ```bash
-pip install quantize-rs
+pip install quantization-rs
 ```
 
 Build from source:
@@ -477,7 +479,7 @@ Contributions welcome! Areas we need help:
 **Process:**
 
 1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
+2. Create feature branch (`git checkout -b feature/<feature name>`)
 3. Add tests for new features
 4. Ensure `cargo test` and `cargo clippy` pass
 5. Submit pull request
@@ -516,7 +518,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Contact
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/quantize-rs/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/quantize-rs/discussions)
-- **PyPI**: [pypi.org/project/quantize-rs](https://pypi.org/project/quantize-rs/)
+- **Issues**: [GitHub Issues](https://github.com/AR-Kamal/quantize-rs/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/AR-Kamal/quantize-rs/discussions)
+- **PyPI**: [pypi.org/project/quantization-rs](https://pypi.org/project/quantization-rs/)
 - **Crates.io**: [crates.io/crates/quantize-rs](https://crates.io/crates/quantize-rs)
