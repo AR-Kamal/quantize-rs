@@ -1,4 +1,4 @@
-# quantize-rs (Python)
+# quantization-rs (Python)
 
 Fast, accurate neural network quantization for ONNX models. Powered by Rust.
 
