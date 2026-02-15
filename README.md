@@ -3,8 +3,10 @@
 Neural network quantization toolkit for ONNX models, written in Rust with Python bindings.
 
 [![Crates.io](https://img.shields.io/crates/v/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
+[![Crates.io Downloads](https://img.shields.io/crates/d/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
 [![Documentation](https://docs.rs/quantize-rs/badge.svg)](https://docs.rs/quantize-rs)
 [![PyPI](https://img.shields.io/pypi/v/quantization-rs.svg)](https://pypi.org/project/quantization-rs/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/quantization-rs.svg)](https://pypi.org/project/quantization-rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 quantize-rs converts float32 ONNX models to INT8 or INT4 representation using post-training quantization. It supports weight-only quantization, activation-based calibration, per-channel quantization, and outputs standard ONNX QDQ (DequantizeLinear) graphs compatible with ONNX Runtime.
