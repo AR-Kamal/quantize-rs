@@ -18,6 +18,7 @@ use quantize_rs::{
     OnnxModel, Quantizer, QuantConfig,
     CalibrationDataset, ActivationEstimator,
 };
+use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
 use std::env;
 
 fn main() -> Result<()> {
@@ -99,7 +100,7 @@ fn main() -> Result<()> {
             vec![3, 224, 224]
         };
         
-        CalibrationDataset::random(input_shape, 100, (0.0, 1.0))
+        CalibrationDataset::random(input_shape, 100, (0.0, 1.0))?
     };
     println!("  Samples: {}", dataset.len());
     println!("  Shape:   {:?}", dataset.sample_shape());
@@ -110,13 +111,17 @@ fn main() -> Result<()> {
     println!("  This runs {} real inference passes to collect activation ranges.", dataset.len());
     let mut estimator = ActivationEstimator::new(model, &model_path)?;
     estimator.calibrate(&dataset)?;
-    let activation_stats = estimator.into_layer_stats();
+    let activation_stats: std::collections::HashMap<String, quantize_rs::ActivationStats> =
+        estimator.get_layer_stats()
+            .into_iter()
+            .map(|(k, v)| (k, v.clone()))
+            .collect();
     println!("  Collected stats for {} layers", activation_stats.len());
     println!();
 
     // --- Step 4: Quantize using activation statistics ---
     println!("[4/5] Quantizing model with activation-based ranges...");
-    let mut model = OnnxModel::load(&model_path)?; // Reload fresh model
+    let mut model = estimator.into_model();
 
     let config = QuantConfig {
         bits,
@@ -135,16 +140,17 @@ fn main() -> Result<()> {
             weight.shape.clone(),
         )?;
 
-        let (scale, zero_point) = quantized.get_scale_zero_point();
-        let bits_used = quantized.bits();
+        let (scales, zero_points) = quantized.get_all_scales_zero_points();
+        let is_per_channel = quantized.is_per_channel();
 
-        quantized_data.push((
-            weight.name.clone(),
-            quantized.data(),
-            scale,
-            zero_point,
-            bits_used,
-        ));
+        quantized_data.push(QdqWeightInput {
+            original_name: weight.name.clone(),
+            quantized_values: quantized.data(),
+            scales,
+            zero_points,
+            bits: quantized.bits(),
+            axis: if is_per_channel { Some(0) } else { None },
+        });
     }
     println!("  Quantized {} weight tensors", quantized_data.len());
     println!();

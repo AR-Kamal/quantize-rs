@@ -36,11 +36,22 @@ pub struct ActivationEstimator {
     /// Original ONNX model (preserved for later use in quantization)
     model: OnnxModel,
     /// tract runnable model with all intermediate outputs exposed
+    #[allow(clippy::type_complexity)]
     tract_model: SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>,
     /// Collected activation stats per layer
     layer_stats: HashMap<String, ActivationStats>,
     /// Mapping from tract output index → layer name
     output_names: Vec<String>,
+}
+
+impl std::fmt::Debug for ActivationEstimator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActivationEstimator")
+            .field("model", &self.model)
+            .field("layer_stats_count", &self.layer_stats.len())
+            .field("output_names_count", &self.output_names.len())
+            .finish()
+    }
 }
 
 impl ActivationEstimator {
@@ -70,10 +81,9 @@ impl ActivationEstimator {
         // are the actual computation boundaries we care about.
 
         let node_count = tract_model.nodes.len();
-        let mut output_names = Vec::new();
 
         // Preserve original model outputs (usually just the final prediction)
-        let original_outputs: Vec<OutletId> = tract_model.outputs.iter().copied().collect();
+        let original_outputs: Vec<OutletId> = tract_model.outputs.to_vec();
 
         for node_id in 0..node_count {
             let node = &tract_model.nodes[node_id];
@@ -91,14 +101,24 @@ impl ActivationEstimator {
                 if !original_outputs.contains(&outlet) {
                     tract_model.outputs.push(outlet);
                 }
-                output_names.push(node.name.clone());
             }
         }
 
         // --- Optimize and prepare for inference ---
-        let tract_model = tract_model
+        let optimized_model = tract_model
             .into_optimized()
-            .context("tract optimization failed")?
+            .context("tract optimization failed")?;
+
+        // Collect output names AFTER optimization, since optimization may
+        // renumber/rename nodes. Use the optimized model's output outlets
+        // to map back to node names.
+        let mut output_names = Vec::new();
+        for outlet in optimized_model.outputs.iter() {
+            let node = &optimized_model.nodes[outlet.node];
+            output_names.push(node.name.clone());
+        }
+
+        let tract_model = optimized_model
             .into_runnable()
             .context("tract failed to create runnable plan")?;
 
@@ -314,7 +334,7 @@ mod tests {
         };
 
         // Create calibration dataset (just 5 samples for testing)
-        let dataset = CalibrationDataset::random(input_shape, 5, (0.0, 1.0));
+        let dataset = CalibrationDataset::random(input_shape, 5, (0.0, 1.0)).unwrap();
 
         // Run calibration
         let mut estimator = ActivationEstimator::new(model, model_path)
@@ -330,7 +350,7 @@ mod tests {
         for (name, stat) in stats.iter().take(5) {
             println!(
                 "  {}: min={:.4}, max={:.4}, mean={:.4}",
-                name, stat.min, stat.max, stat.mean
+                name, stat.min(), stat.max(), stat.mean()
             );
         }
 
@@ -338,11 +358,11 @@ mod tests {
         // (not all zeros, not all same value)
         for (name, stat) in stats.iter() {
             assert!(
-                (stat.max - stat.min).abs() > 1e-6,
+                (stat.max() - stat.min()).abs() > 1e-6,
                 "Layer {} has constant output (min={}, max={})",
                 name,
-                stat.min,
-                stat.max
+                stat.min(),
+                stat.max()
             );
         }
     }
@@ -359,7 +379,7 @@ mod tests {
         }
 
         let model = OnnxModel::load(model_path).unwrap();
-        let dataset = CalibrationDataset::random(vec![1, 28, 28], 10, (0.0, 1.0));
+        let dataset = CalibrationDataset::random(vec![1, 28, 28], 10, (0.0, 1.0)).unwrap();
         let mut estimator = ActivationEstimator::new(model, model_path).unwrap();
 
         estimator.calibrate(&dataset).unwrap();
@@ -370,7 +390,7 @@ mod tests {
         // All stats should have count = 10 samples
         for (_name, stat) in stats.iter() {
             // Each layer sees data from all samples (aggregated)
-            assert!(stat.count > 0);
+            assert!(stat.count() > 0);
         }
     }
 }

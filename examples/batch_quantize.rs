@@ -6,6 +6,7 @@
 
 use anyhow::Result;
 use quantize_rs::{OnnxModel, QuantConfig, Quantizer};
+use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
 use std::path::Path;
 
 fn quantize_model(input_path: &str, output_path: &str) -> Result<()> {
@@ -20,17 +21,18 @@ fn quantize_model(input_path: &str, output_path: &str) -> Result<()> {
     let mut quantized_data = Vec::new();
     for weight in &weights {
         let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())?;
-        
-        let (scale, zero_point) = quantized.get_scale_zero_point();
-        let bits = quantized.bits();
-        
-        quantized_data.push((
-            weight.name.clone(),
-            quantized.data(),
-            scale,
-            zero_point,
-            bits,
-        ));
+
+        let (scales, zero_points) = quantized.get_all_scales_zero_points();
+        let is_per_channel = quantized.is_per_channel();
+
+        quantized_data.push(QdqWeightInput {
+            original_name: weight.name.clone(),
+            quantized_values: quantized.data(),
+            scales,
+            zero_points,
+            bits: quantized.bits(),
+            axis: if is_per_channel { Some(0) } else { None },
+        });
     }
 
     model.save_quantized(&quantized_data, output_path)?;

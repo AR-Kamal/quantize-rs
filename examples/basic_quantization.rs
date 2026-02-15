@@ -6,6 +6,7 @@
 
 use anyhow::Result;
 use quantize_rs::{OnnxModel, QuantConfig, Quantizer};
+use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
 
 fn main() -> Result<()> {
     println!("=== Basic Quantization Example ===\n");
@@ -36,16 +37,17 @@ fn main() -> Result<()> {
         let error = quantized.quantization_error(&weight.data);
         total_error += error;
 
-        let (scale, zero_point) = quantized.get_scale_zero_point();
-        let bits = quantized.bits();
+        let (scales, zero_points) = quantized.get_all_scales_zero_points();
+        let is_per_channel = quantized.is_per_channel();
 
-        quantized_data.push((
-            weight.name.clone(),
-            quantized.data(),
-            scale,
-            zero_point,
-            bits,
-        ));
+        quantized_data.push(QdqWeightInput {
+            original_name: weight.name.clone(),
+            quantized_values: quantized.data(),
+            scales,
+            zero_points,
+            bits: quantized.bits(),
+            axis: if is_per_channel { Some(0) } else { None },
+        });
     }
 
     let avg_error = total_error / weights.len() as f32;

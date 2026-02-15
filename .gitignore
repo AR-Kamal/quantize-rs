@@ -15,3 +15,11 @@ test-config.yaml
 *.swp
 *.swo
 *~
+/test_venv/
+/test_venv2/
+__pycache__/
+.pytest_cache/
+.venv/
+test_python_bindings.py
+test.py
+RELEASING.md

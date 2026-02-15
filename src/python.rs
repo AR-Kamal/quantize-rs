@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 use pyo3::exceptions::PyRuntimeError;
 
 use crate::onnx_utils::OnnxModel;
+use crate::onnx_utils::graph_builder::QdqWeightInput;
 use crate::quantization::{QuantConfig, Quantizer};
 use crate::calibration::{CalibrationDataset, ActivationEstimator, methods::CalibrationMethod};
 
@@ -79,16 +80,18 @@ fn quantize(
         let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())
             .map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
 
-        let (scale, zero_point) = quantized.get_scale_zero_point();
+        let (scales, zero_points) = quantized.get_all_scales_zero_points();
+        let is_pc = quantized.is_per_channel();
         let bits_used = quantized.bits();
 
-        quantized_data.push((
-            weight.name.clone(),
-            quantized.data(),
-            scale,
-            zero_point,
-            bits_used,
-        ));
+        quantized_data.push(QdqWeightInput {
+            original_name:    weight.name.clone(),
+            quantized_values: quantized.data(),
+            scales,
+            zero_points,
+            bits:             bits_used,
+            axis:             if is_pc { Some(0) } else { None },
+        });
     }
 
     // Save
@@ -140,13 +143,12 @@ fn quantize_with_calibration(
     sample_shape: Option<Vec<usize>>,
 ) -> PyResult<()> {
     // Parse calibration method
-    let calib_method = match method.to_lowercase().as_str() {
-        "minmax" => CalibrationMethod::MinMax,
-        "percentile" => CalibrationMethod::Percentile(99.9),
-        "entropy" => CalibrationMethod::Entropy,
-        "mse" => CalibrationMethod::MSE,
-        _ => return Err(PyRuntimeError::new_err(format!("Unknown method: {}", method))),
-    };
+    let calib_method: CalibrationMethod = method.parse()
+        .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))?;
+
+    // Load model (used for both shape detection and calibration)
+    let model = OnnxModel::load(input_path)
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to load model: {}", e)))?;
 
     // Load calibration data
     let dataset = if let Some(path) = calibration_data {
@@ -157,25 +159,26 @@ fn quantize_with_calibration(
         let shape = if let Some(s) = sample_shape {
             s
         } else {
-            // Try to detect from model
-            let model = OnnxModel::load(input_path)
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to load model: {}", e)))?;
-            let info = model.info();
-            
-            // Parse shape from first input (best-effort)
-            if !info.inputs.is_empty() {
-                parse_shape_from_input(&info.inputs[0]).unwrap_or_else(|| vec![3, 224, 224])
-            } else {
-                vec![3, 224, 224]
-            }
+            model.input_shapes().into_iter().next()
+                .and_then(|dims| {
+                    let shape: Vec<usize> = dims.into_iter()
+                        .filter_map(|d| if d > 0 { Some(d as usize) } else { None })
+                        .collect();
+                    // Skip batch dimension if present
+                    if shape.len() >= 2 {
+                        Some(shape[1..].to_vec())
+                    } else if !shape.is_empty() {
+                        Some(shape)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| vec![3, 224, 224])
         };
-        
-        CalibrationDataset::random(shape, num_samples, (0.0, 1.0))
-    };
 
-    // Load model for calibration
-    let model = OnnxModel::load(input_path)
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to load model: {}", e)))?;
+        CalibrationDataset::random(shape, num_samples, (0.0, 1.0))
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create random dataset: {}", e)))?
+    };
 
     // Run calibration
     let mut estimator = ActivationEstimator::new(model, input_path)
@@ -184,11 +187,13 @@ fn quantize_with_calibration(
     estimator.calibrate(&dataset)
         .map_err(|e| PyRuntimeError::new_err(format!("Calibration failed: {}", e)))?;
 
-    let activation_stats = estimator.into_layer_stats();
-
-    // Reload model for quantization
-    let mut model = OnnxModel::load(input_path)
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to reload model: {}", e)))?;
+    // Collect stats (borrowed) then recover the model without reloading
+    let activation_stats: std::collections::HashMap<String, _> = estimator
+        .get_layer_stats()
+        .into_iter()
+        .map(|(k, v)| (k, v.clone()))
+        .collect();
+    let mut model = estimator.into_model();
 
     let weights = model.extract_weights();
 
@@ -208,16 +213,18 @@ fn quantize_with_calibration(
             weight.shape.clone(),
         ).map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
 
-        let (scale, zero_point) = quantized.get_scale_zero_point();
+        let (scales, zero_points) = quantized.get_all_scales_zero_points();
+        let is_pc = quantized.is_per_channel();
         let bits_used = quantized.bits();
 
-        quantized_data.push((
-            weight.name.clone(),
-            quantized.data(),
-            scale,
-            zero_point,
-            bits_used,
-        ));
+        quantized_data.push(QdqWeightInput {
+            original_name:    weight.name.clone(),
+            quantized_values: quantized.data(),
+            scales,
+            zero_points,
+            bits:             bits_used,
+            axis:             if is_pc { Some(0) } else { None },
+        });
     }
 
     // Save
@@ -253,28 +260,6 @@ fn model_info(input_path: &str) -> PyResult<ModelInfo> {
         inputs: info.inputs,
         outputs: info.outputs,
     })
-}
-
-// ===========================================================================
-// Helper functions
-// ===========================================================================
-
-/// Parse input shape from model info string (e.g., "Input3: float32[1,1,28,28]")
-fn parse_shape_from_input(input_str: &str) -> Option<Vec<usize>> {
-    let shape_part = input_str.split('[').nth(1)?;
-    let shape_str = shape_part.split(']').nth(0)?;
-    
-    let dims: Vec<usize> = shape_str
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
-    
-    // Skip batch dimension (first dim), return remaining
-    if dims.len() >= 2 {
-        Some(dims[1..].to_vec())
-    } else {
-        None
-    }
 }
 
 // ===========================================================================

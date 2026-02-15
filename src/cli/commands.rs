@@ -1,11 +1,12 @@
 //src/cli/commands.rs
-use crate::config::Config;
+use quantize_rs::config::Config;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
-use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use quantize_rs::onnx_utils::OnnxModel;
+use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
 use quantize_rs::quantization::{QuantConfig, Quantizer};
 use quantize_rs::calibration::{CalibrationDataset, ActivationEstimator, methods::CalibrationMethod};
 
@@ -21,7 +22,7 @@ pub fn quantize(input: &str, output: &str, bits: u8, per_channel: bool) -> Resul
 
     println!("Extracting weights...");
     let weights = model.extract_weights();
-    let original_size = model.total_size_bytes();
+    let original_size: usize = weights.iter().map(|w| w.size_bytes()).sum();
 
     if weights.is_empty() {
         println!("⚠  No weights found to quantize!");
@@ -48,54 +49,46 @@ pub fn quantize(input: &str, output: &str, bits: u8, per_channel: bool) -> Resul
     };
     let quantizer = Quantizer::new(config);
 
-    let pb = ProgressBar::new(weights.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} tensors ({eta})")
-            .expect("Failed to set progress bar template")
-            .progress_chars("#>-")
-    );
+    // Quantize all weights in parallel
+    let results: Vec<_> = weights.par_iter()
+        .map(|weight| {
+            let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())?;
+            let error = quantized.quantization_error(&weight.data);
+            let (scales, zero_points) = quantized.get_all_scales_zero_points();
+            let is_per_channel = quantized.is_per_channel();
+            let bits_used = quantized.bits();
+            let size = quantized.size_bytes();
 
-    let mut quantized_weights = Vec::new();
+            let qdq = QdqWeightInput {
+                original_name:    weight.name.clone(),
+                quantized_values: quantized.data(),
+                scales,
+                zero_points,
+                bits:             bits_used,
+                axis:             if is_per_channel { Some(0) } else { None },
+            };
+
+            Ok::<_, anyhow::Error>((qdq, error, size))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
     let mut quantized_data = Vec::new();
-    let mut total_error = 0.0;
+    let mut total_error = 0.0_f32;
+    let mut quantized_size = 0_usize;
 
-    for weight in &weights {
-        let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())?;
-        let error = quantized.quantization_error(&weight.data);
-
-        if weight.data.len() > 10000 && per_channel {
-            eprintln!("  {}: {} elements, MSE: {:.8}", 
-                    weight.name, weight.data.len(), error);
-        }
+    for (qdq, error, size) in results {
         total_error += error;
-
-        let (scale, zero_point) = quantized.get_scale_zero_point();
-        let bits_used = quantized.bits();
-        
-        quantized_data.push((
-            weight.name.clone(),
-            quantized.data(),
-            scale,
-            zero_point,
-            bits_used,
-        ));
-
-        quantized_weights.push(quantized);
-        pb.inc(1);
+        quantized_size += size;
+        quantized_data.push(qdq);
     }
 
-    pb.finish_with_message("done");
-
-    let avg_error = if quantized_weights.is_empty() {
+    let avg_error = if quantized_data.is_empty() {
         0.0
     } else {
-        total_error / quantized_weights.len() as f32
+        total_error / quantized_data.len() as f32
     };
 
-    let quantized_size: usize = quantized_weights.iter().map(|w| w.size_bytes()).sum();
-
-    let compression_ratio = original_size as f32 / quantized_size as f32;
+    let compression_ratio = original_size as f32 / quantized_size.max(1) as f32;
 
     println!("✓ Quantization complete");
     println!();
@@ -168,10 +161,21 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     let quantized_info = quantized_model.info();
 
     let original_weights = original_model.extract_weights();
-    let quantized_weights = quantized_model.extract_weights();
+    let original_size: usize = original_weights.iter().map(|w| w.size_bytes()).sum();
 
-    let original_size = original_model.total_size_bytes();
-    let quantized_size = quantized_model.total_size_bytes();
+    let quantized_weight_info = quantized_model.load_quantized_info();
+    let is_qdq = !quantized_weight_info.is_empty();
+
+    let (quantized_weight_count, quantized_size) = if is_qdq {
+        let count = quantized_weight_info.len();
+        // Each quantized element is 1 byte (INT8 storage)
+        let size: usize = quantized_weight_info.iter().map(|w| w.original_length).sum();
+        (count, size)  // size in bytes (INT8 = 1 byte per element)
+    } else {
+        let weights = quantized_model.extract_weights();
+        let size: usize = weights.iter().map(|w| w.size_bytes()).sum();
+        (weights.len(), size)
+    };
 
     let original_file_size = std::fs::metadata(original)
         .context("Failed to read original file")?
@@ -204,7 +208,7 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     println!(
         "  Tensors:     {} vs {}",
         original_weights.len(),
-        quantized_weights.len()
+        quantized_weight_count
     );
     println!(
         "  Total size:  {:.2} KB vs {:.2} KB",
@@ -226,9 +230,9 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
         quantized_file_size as f32 / 1_048_576.0
     );
 
-    let file_compression = original_file_size as f32 / quantized_file_size.max(1) as f32;
+    let file_compression = original_file_size as f64 / quantized_file_size.max(1) as f64;
     let size_reduction =
-        ((original_file_size - quantized_file_size) as f32 / original_file_size as f32) * 100.0;
+        (original_file_size as f64 - quantized_file_size as f64) / original_file_size.max(1) as f64 * 100.0;
 
     println!("  Reduction:   {:.1}%", size_reduction);
     println!("  Ratio:       {:.2}x", file_compression);
@@ -254,13 +258,13 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
         println!("  ⚠ Low compression ({:.1}%)", size_reduction);
     }
 
-    if original_weights.len() == quantized_weights.len() {
+    if original_weights.len() == quantized_weight_count {
         println!("  ✓ All weights quantized");
     } else {
         println!(
             "  ⚠ Weight count mismatch ({} vs {})",
             original_weights.len(),
-            quantized_weights.len()
+            quantized_weight_count
         );
     }
 
@@ -282,20 +286,15 @@ pub fn calibrate(
     println!();
     
     // Parse calibration method
-    let method = match method_str.to_lowercase().as_str() {
-        "minmax" => CalibrationMethod::MinMax,
-        "percentile" => CalibrationMethod::Percentile(99.9),
-        "entropy" => CalibrationMethod::Entropy,
-        "mse" => CalibrationMethod::MSE,
-        _ => {
-            eprintln!("Unknown method: {}. Using percentile.", method_str);
-            CalibrationMethod::Percentile(99.9)
-        }
-    };
-    
-    println!("Method: {}", method.name().cyan());
+    let method: CalibrationMethod = method_str.parse()?;
+
+    println!("Method: {}", format!("{}", method).cyan());
     println!();
     
+    // Load model first so we can auto-detect shape
+    println!("Loading model: {}", input_path);
+    let model = OnnxModel::load(input_path)?;
+
     // Load calibration data
     println!("Loading calibration data: {}", data_path);
     let dataset = if data_path.ends_with(".npy") {
@@ -303,16 +302,27 @@ pub fn calibrate(
     } else {
         // Generate random data for testing
         println!("⚠  No .npy file provided, using random data for demo");
-        CalibrationDataset::random(vec![1, 28, 28], 100, (0.0, 1.0))
+        let input_shape = model.input_shapes().into_iter().next()
+            .and_then(|dims| {
+                let shape: Vec<usize> = dims.into_iter()
+                    .filter_map(|d| if d > 0 { Some(d as usize) } else { None })
+                    .collect();
+                // Skip batch dimension if present
+                if shape.len() >= 2 {
+                    Some(shape[1..].to_vec())
+                } else if !shape.is_empty() {
+                    Some(shape)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| vec![3, 224, 224]);
+        CalibrationDataset::random(input_shape, 100, (0.0, 1.0))?
     };
-    
+
     println!("✓ Loaded {} samples", dataset.len());
     println!("  Sample shape: {:?}", dataset.sample_shape());
     println!();
-    
-    // Load model
-    println!("Loading model: {}", input_path);
-    let model = OnnxModel::load(input_path)?;
     println!("✓ Model loaded");
     println!();
     
@@ -343,45 +353,41 @@ pub fn calibrate(
         calibration_method: Some(method),
     };
     let quantizer = Quantizer::with_calibration(config, calib_stats);
-    
-    let pb = ProgressBar::new(weights.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} tensors ({eta})")
-            .expect("Failed to set progress bar template")
-            .progress_chars("#>-")
-    );
-    
+
+    let results: Vec<_> = weights.par_iter()
+        .map(|weight| {
+            let quantized = quantizer.quantize_tensor_with_name(
+                &weight.name,
+                &weight.data,
+                weight.shape.clone(),
+            )?;
+
+            let error = quantized.quantization_error(&weight.data);
+            let (scales, zero_points) = quantized.get_all_scales_zero_points();
+            let is_per_channel = quantized.is_per_channel();
+            let bits_used = quantized.bits();
+
+            let qdq = QdqWeightInput {
+                original_name:    weight.name.clone(),
+                quantized_values: quantized.data(),
+                scales,
+                zero_points,
+                bits:             bits_used,
+                axis:             if is_per_channel { Some(0) } else { None },
+            };
+
+            Ok::<_, anyhow::Error>((qdq, error))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
     let mut quantized_data = Vec::new();
-    let mut total_error = 0.0;
-    
-    for weight in &weights {
-        let quantized = quantizer.quantize_tensor_with_name(
-            &weight.name,
-            &weight.data,
-            weight.shape.clone(),
-        )?;
-        
-        let error = quantized.quantization_error(&weight.data);
+    let mut total_error = 0.0_f32;
+    for (qdq, error) in results {
         total_error += error;
-        
-        let (scale, zero_point) = quantized.get_scale_zero_point();
-        let bits_used = quantized.bits();
-        
-        quantized_data.push((
-            weight.name.clone(),
-            quantized.data(),
-            scale,
-            zero_point,
-            bits_used,
-        ));
-        
-        pb.inc(1);
+        quantized_data.push(qdq);
     }
-    
-    pb.finish_with_message("done");
-    
-    let avg_error = total_error / weights.len() as f32;
+
+    let avg_error = if weights.is_empty() { 0.0 } else { total_error / weights.len() as f32 };
     
     println!();
     println!("Results:");
@@ -416,104 +422,136 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     
     println!("{}", "Structure Validation".bold());
     println!("{}", "-".repeat(60));
-    
+
     let original_info = original_model.info();
     let quantized_info = quantized_model.info();
-    
+
     let mut validation_passed = true;
-    
-    if original_info.num_nodes == quantized_info.num_nodes {
+
+    // QDQ models add DequantizeLinear nodes and may remove weight inputs.
+    // Detect QDQ by checking for DequantizeLinear nodes in the quantized model.
+    let quantized_weight_info = quantized_model.load_quantized_info();
+    let is_qdq = !quantized_weight_info.is_empty();
+    let num_dq_nodes = quantized_weight_info.len();
+
+    if is_qdq {
+        let expected_nodes = original_info.num_nodes + num_dq_nodes;
+        if quantized_info.num_nodes == expected_nodes {
+            println!("✓ Node count: {} ({} original + {} DequantizeLinear)",
+                     quantized_info.num_nodes, original_info.num_nodes, num_dq_nodes);
+        } else {
+            println!("⚠  Node count: {} (expected {} = {} + {} DQ nodes)",
+                     quantized_info.num_nodes, expected_nodes,
+                     original_info.num_nodes, num_dq_nodes);
+        }
+    } else if original_info.num_nodes == quantized_info.num_nodes {
         println!("✓ Node count matches: {}", original_info.num_nodes);
     } else {
-        println!("✗ Node count mismatch: {} vs {}", 
+        println!("✗ Node count mismatch: {} vs {}",
                  original_info.num_nodes, quantized_info.num_nodes);
         validation_passed = false;
     }
-    
-    if original_info.inputs.len() == quantized_info.inputs.len() {
+
+    // QDQ removes weight names from graph.input to avoid "duplicate definition"
+    if is_qdq {
+        let expected_inputs = original_info.inputs.len().saturating_sub(num_dq_nodes);
+        if quantized_info.inputs.len() >= expected_inputs {
+            println!("✓ Input count: {} (weight inputs removed for QDQ)",
+                     quantized_info.inputs.len());
+        } else {
+            println!("⚠  Input count: {} (expected >= {})",
+                     quantized_info.inputs.len(), expected_inputs);
+        }
+    } else if original_info.inputs.len() == quantized_info.inputs.len() {
         println!("✓ Input count matches: {}", original_info.inputs.len());
     } else {
-        println!("✗ Input count mismatch: {} vs {}", 
+        println!("✗ Input count mismatch: {} vs {}",
                  original_info.inputs.len(), quantized_info.inputs.len());
         validation_passed = false;
     }
-    
+
     if original_info.outputs.len() == quantized_info.outputs.len() {
         println!("✓ Output count matches: {}", original_info.outputs.len());
     } else {
-        println!("✗ Output count mismatch: {} vs {}", 
+        println!("✗ Output count mismatch: {} vs {}",
                  original_info.outputs.len(), quantized_info.outputs.len());
         validation_passed = false;
     }
-    
+
     println!();
-    
-    println!("{}", "Weight Validation".bold());
+
+    println!("{}", "Graph Connectivity".bold());
     println!("{}", "-".repeat(60));
-    
-    let original_weights = original_model.extract_weights();
-    let quantized_weights = quantized_model.extract_weights();
-    
-    if original_weights.len() == quantized_weights.len() {
-        println!("✓ Weight tensor count matches: {}", original_weights.len());
-    } else {
-        println!("⚠  Weight tensor count differs: {} vs {}", 
-                 original_weights.len(), quantized_weights.len());
-        println!("   (This might be expected if quantization added/merged tensors)");
-    }
-    
-    let mut shape_mismatches = 0;
-    for (orig, quant) in original_weights.iter().zip(quantized_weights.iter()) {
-        if orig.shape != quant.shape {
-            shape_mismatches += 1;
-            if detailed {
-                println!("⚠  Shape mismatch in '{}': {:?} vs {:?}", 
-                         orig.name, orig.shape, quant.shape);
-            }
-        }
-    }
-    
-    if shape_mismatches == 0 {
-        println!("✓ All weight shapes match");
-    } else {
-        println!("⚠  {} weight tensors have shape mismatches", shape_mismatches);
+
+    let connectivity = quantized_model.validate_connectivity();
+    print!("{}", connectivity.summary());
+    if !connectivity.valid {
         validation_passed = false;
     }
-    
+
     println!();
-    println!("Checking for numerical issues...");
 
-    let mut all_zeros = 0;
-    let mut all_same = 0;
-    let mut suspicious = false;
+    println!("{}", "Weight Validation".bold());
+    println!("{}", "-".repeat(60));
 
-    for weight in &quantized_weights {
-        if weight.data.iter().all(|&v| v == 0.0) {
-            all_zeros += 1;
+    let original_weights = original_model.extract_weights();
+
+    if is_qdq {
+        // For QDQ models, use load_quantized_info which understands the QDQ format
+        println!("✓ QDQ format detected: {} quantized weight tensors", quantized_weight_info.len());
+
+        if original_weights.len() == quantized_weight_info.len() {
+            println!("✓ All {} original weights have quantized counterparts",
+                     original_weights.len());
+        } else {
+            println!("⚠  {} original weights, {} quantized ({} unquantized)",
+                     original_weights.len(), quantized_weight_info.len(),
+                     original_weights.len().saturating_sub(quantized_weight_info.len()));
         }
-        
-        if weight.data.len() > 1 {
-            let first = weight.data[0];
-            if weight.data.iter().all(|&v| v == first) {
-                all_same += 1;
+
+        // Check scale/zero-point sanity
+        let mut bad_scales = 0;
+        for qw in &quantized_weight_info {
+            if qw.scale <= 0.0 || !qw.scale.is_finite() {
+                bad_scales += 1;
+                if detailed {
+                    println!("⚠  Bad scale for '{}': {}", qw.name, qw.scale);
+                }
             }
         }
-    }
+        if bad_scales > 0 {
+            println!("⚠  {} weights have invalid scales", bad_scales);
+            validation_passed = false;
+        } else {
+            println!("✓ All quantization scales are valid");
+        }
+    } else {
+        // Non-QDQ: compare weight tensors directly
+        let quantized_weights = quantized_model.extract_weights();
 
-    if all_zeros > original_weights.len() / 4 {
-        println!("⚠  {} tensors are all zeros (might indicate issues)", all_zeros);
-        suspicious = true;
-    } else if all_zeros > 0 {
-        println!("ℹ️  {} small tensors are zero (likely biases)", all_zeros);
-    }
+        if original_weights.len() == quantized_weights.len() {
+            println!("✓ Weight tensor count matches: {}", original_weights.len());
+        } else {
+            println!("⚠  Weight tensor count differs: {} vs {}",
+                     original_weights.len(), quantized_weights.len());
+        }
 
-    if all_same > original_weights.len() / 10 {
-        println!("⚠  {} tensors have identical values (might indicate quantization failure)", all_same);
-        suspicious = true;
-    }
-
-    if !suspicious && all_zeros == 0 && all_same == 0 {
-        println!("✓ No numerical issues detected");
+        let mut shape_mismatches = 0;
+        for (orig, quant) in original_weights.iter().zip(quantized_weights.iter()) {
+            if orig.shape != quant.shape {
+                shape_mismatches += 1;
+                if detailed {
+                    println!("⚠  Shape mismatch in '{}': {:?} vs {:?}",
+                             orig.name, orig.shape, quant.shape);
+                }
+            }
+        }
+        if shape_mismatches == 0 {
+            println!("✓ All weight shapes match");
+        } else {
+            println!("⚠  {} weight tensors have shape mismatches", shape_mismatches);
+            validation_passed = false;
+        }
     }
     
     println!();
@@ -523,16 +561,18 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     
     let original_size = std::fs::metadata(original_path)?.len();
     let quantized_size = std::fs::metadata(quantized_path)?.len();
-    let compression = original_size as f32 / quantized_size as f32;
-    let reduction = ((original_size - quantized_size) as f32 / original_size as f32) * 100.0;
-    
-    println!("Original:  {:.2} MB", original_size as f32 / 1_048_576.0);
-    println!("Quantized: {:.2} MB", quantized_size as f32 / 1_048_576.0);
+    let compression = original_size as f64 / quantized_size.max(1) as f64;
+    let reduction = (original_size as f64 - quantized_size as f64) / original_size.max(1) as f64 * 100.0;
+
+    println!("Original:  {:.2} MB", original_size as f64 / 1_048_576.0);
+    println!("Quantized: {:.2} MB", quantized_size as f64 / 1_048_576.0);
     println!("Reduction: {:.1}% ({:.2}x smaller)", reduction, compression);
-    
-    if compression < 2.0 {
+
+    if reduction < 0.0 {
+        println!("⚠  Warning: Quantized model is larger than original (QDQ overhead on small models).");
+    } else if compression < 2.0 {
         println!("⚠  Warning: Low compression ratio. Quantization may not be working correctly.");
-    } else if compression >= 3.5 && compression <= 4.5 {
+    } else if (3.5..=4.5).contains(&compression) {
         println!("✓ Expected compression for INT8 quantization");
     }
     
@@ -541,10 +581,14 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     if detailed {
         println!("{}", "Detailed Layer Analysis".bold());
         println!("{}", "-".repeat(60));
-        
-        use quantize_rs::quantization::{QuantConfig, Quantizer};
-        
-        let config = QuantConfig::int8();
+
+        // Detect bit width from QDQ info if available
+        let detected_bits = if is_qdq && !quantized_weight_info.is_empty() {
+            quantized_weight_info[0].bits
+        } else {
+            8
+        };
+        let config = QuantConfig { bits: detected_bits, per_channel: false, calibration_method: None };
         let quantizer = Quantizer::new(config);
         
         println!("{:<40} {:>12} {:>15}", "Layer", "Elements", "MSE Error");
@@ -642,12 +686,14 @@ pub fn batch(
 
     for (idx, input_path) in input_files.iter().enumerate() {
         let input_str = input_path.to_string_lossy();
-        let filename = input_path.file_name().unwrap().to_string_lossy();
+        let filename = input_path.file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| input_path.to_string_lossy().to_string());
         
         let output_filename = if let Some(stem) = input_path.file_stem() {
-            format!("{}_int8.onnx", stem.to_string_lossy())
+            format!("{}_int{}.onnx", stem.to_string_lossy(), bits)
         } else {
-            format!("{}_int8.onnx", filename)
+            format!("{}_int{}.onnx", filename, bits)
         };
         
         let output_path = Path::new(output_dir).join(&output_filename);
@@ -667,12 +713,12 @@ pub fn batch(
             Ok(_) => {
                 println!("✓ Success");
                 println!();
-                results.push((input_str.to_string(), "Success".green().to_string()));
+                results.push((input_str.to_string(), "Success".to_string()));
             }
             Err(e) => {
                 println!("✗ Failed: {}", e);
                 println!();
-                results.push((input_str.to_string(), format!("Failed: {}", e).red().to_string()));
+                results.push((input_str.to_string(), format!("Failed: {}", e)));
                 
                 if !continue_on_error {
                     println!("✗ Stopping batch processing due to error");

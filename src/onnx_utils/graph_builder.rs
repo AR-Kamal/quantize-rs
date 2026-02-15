@@ -21,22 +21,29 @@ use super::quantization_nodes::{
 // ===========================================================================
 
 /// One weight to convert: FP32 initializer → INT8 + DequantizeLinear block.
+#[derive(Debug)]
 pub struct QdqWeightInput {
     /// Original initializer name (e.g., `"conv1.weight"`)
     pub original_name: String,
     /// Quantized values as i8.  For INT4 these are in [-8, 7]; for INT8 in [-128, 127].
     /// Always unpacked — one value per element.
     pub quantized_values: Vec<i8>,
-    /// Quantization scale (FP32).
-    pub scale: f32,
-    /// Zero point (INT8).
-    pub zero_point: i8,
+    /// Quantization scales (FP32).
+    /// Length 1 for per-tensor; one per channel for per-channel.
+    pub scales: Vec<f32>,
+    /// Zero points (INT8).
+    /// Same length as `scales`.
+    pub zero_points: Vec<i8>,
     /// Original bit-width (4 or 8).  Informational only — ONNX storage is always INT8.
     /// Persisted in model metadata so `load_quantized_info` can recover it.
     pub bits: u8,
+    /// Per-channel quantization axis, or `None` for per-tensor.
+    pub axis: Option<usize>,
 }
 
 /// Result of a graph-connectivity check.
+#[derive(Debug)]
+#[must_use]
 pub struct ConnectivityReport {
     /// `true` if every node input resolves to a known tensor.
     pub valid: bool,
@@ -199,7 +206,7 @@ pub fn apply_qdq_transform(
         .map(|init| {
             (
                 init.get_name().to_string(),
-                init.get_dims().iter().copied().collect(),
+                init.get_dims().to_vec(),
             )
         })
         .collect();
@@ -255,19 +262,27 @@ pub fn apply_qdq_transform(
                 )
             })?;
 
+        let expected_len: i64 = shape.iter().product();
+        if inp.quantized_values.len() as i64 != expected_len {
+            return Err(anyhow::anyhow!(
+                "Weight '{}': quantized_values has {} elements but shape {:?} expects {}",
+                inp.original_name, inp.quantized_values.len(), shape, expected_len
+            ));
+        }
+
         let names = DequantLinearNames::from_original(&inp.original_name);
 
         graph.mut_initializer().push(
             build_quantized_weight_tensor(&names, &inp.quantized_values, shape),
         );
         graph.mut_initializer().push(
-            build_scale_tensor(&names, inp.scale),
+            build_scale_tensor(&names, &inp.scales),
         );
         graph.mut_initializer().push(
-            build_zero_point_tensor(&names, inp.zero_point),
+            build_zero_point_tensor(&names, &inp.zero_points),
         );
 
-        dq_nodes.push(build_dequantize_linear_node(&names));
+        dq_nodes.push(build_dequantize_linear_node(&names, inp.axis));
     }
 
     // -----------------------------------------------------------------------
@@ -276,7 +291,7 @@ pub fn apply_qdq_transform(
     //     (or ONNX Runtime) walks the node list in order.
     // -----------------------------------------------------------------------
     let existing_nodes: Vec<onnx::onnx::NodeProto> =
-        graph.get_node().iter().cloned().collect();
+        graph.get_node().to_vec();
     graph.mut_node().clear();
 
     for node in dq_nodes {
@@ -507,9 +522,10 @@ mod tests {
         let inputs = vec![QdqWeightInput {
             original_name:    "w".to_string(),
             quantized_values: vec![25, 51, 76, 102],
-            scale:            0.039_215_686, // ≈ 1/25.5
-            zero_point:       0,
+            scales:           vec![0.039_215_686], // ≈ 1/25.5
+            zero_points:      vec![0],
             bits:             8,
+            axis:             None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
@@ -529,9 +545,10 @@ mod tests {
         let inputs = vec![QdqWeightInput {
             original_name:    "w".to_string(),
             quantized_values: vec![10, 20, 30, 40],
-            scale:            0.1,
-            zero_point:       -5,
+            scales:           vec![0.1],
+            zero_points:      vec![-5],
             bits:             8,
+            axis:             None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
@@ -558,9 +575,10 @@ mod tests {
         let inputs = vec![QdqWeightInput {
             original_name:    "w".to_string(),
             quantized_values: vec![10, 20, 30, 40],
-            scale:            0.1,
-            zero_point:       0,
+            scales:           vec![0.1],
+            zero_points:      vec![0],
             bits:             8,
+            axis:             None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
@@ -583,9 +601,10 @@ mod tests {
         let inputs = vec![QdqWeightInput {
             original_name:    "w".to_string(),
             quantized_values: vec![1, 2, 3, 4],
-            scale:            1.0,
-            zero_point:       0,
+            scales:           vec![1.0],
+            zero_points:      vec![0],
             bits:             8,
+            axis:             None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
@@ -602,16 +621,18 @@ mod tests {
             QdqWeightInput {
                 original_name:    "w1".to_string(),
                 quantized_values: vec![10, 20, 30, 40],
-                scale:            0.1,
-                zero_point:       0,
+                scales:           vec![0.1],
+                zero_points:      vec![0],
                 bits:             8,
+                axis:             None,
             },
             QdqWeightInput {
                 original_name:    "w2".to_string(),
                 quantized_values: vec![50, 60, 70, 80],
-                scale:            0.2,
-                zero_point:       -1,
+                scales:           vec![0.2],
+                zero_points:      vec![-1],
                 bits:             8,
+                axis:             None,
             },
         ];
 
@@ -647,9 +668,10 @@ mod tests {
         let inputs = vec![QdqWeightInput {
             original_name:    "w".to_string(),
             quantized_values: vec![-8, -1, 0, 7],
-            scale:            0.5,
-            zero_point:       0,
+            scales:           vec![0.5],
+            zero_points:      vec![0],
             bits:             4, // flag says INT4; storage must still be INT8
+            axis:             None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
@@ -675,9 +697,10 @@ mod tests {
         let inputs = vec![QdqWeightInput {
             original_name:    "does_not_exist".to_string(),
             quantized_values: vec![1, 2, 3],
-            scale:            1.0,
-            zero_point:       0,
+            scales:           vec![1.0],
+            zero_points:      vec![0],
             bits:             8,
+            axis:             None,
         }];
 
         let result = apply_qdq_transform(&mut graph, &inputs);
@@ -708,9 +731,10 @@ mod tests {
         let inputs = vec![QdqWeightInput {
             original_name:    "w".to_string(),
             quantized_values: vec![10, 20, 30, 40],
-            scale:            0.1,
-            zero_point:       0,
+            scales:           vec![0.1],
+            zero_points:      vec![0],
             bits:             8,
+            axis:             None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");

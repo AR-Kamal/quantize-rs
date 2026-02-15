@@ -21,6 +21,16 @@ pub struct OnnxModel {
     proto: onnx::onnx::ModelProto,
 }
 
+impl std::fmt::Debug for OnnxModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let graph = self.proto.get_graph();
+        f.debug_struct("OnnxModel")
+            .field("name", &graph.get_name())
+            .field("num_nodes", &graph.get_node().len())
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 pub struct ModelInfo {
     pub name: String,
@@ -44,9 +54,21 @@ pub struct QuantizedWeightInfo {
 // ===========================================================================
 
 impl OnnxModel {
-    pub fn load(path: &str) -> Result<Self> {
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let path = path.as_ref();
         let mut file =
-            fs::File::open(path).with_context(|| format!("Failed to open ONNX file: {}", path))?;
+            fs::File::open(path).with_context(|| format!("Failed to open ONNX file: {}", path.display()))?;
+
+        const MAX_MODEL_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10 GB
+        let file_size = file.metadata()
+            .with_context(|| format!("Failed to read metadata for: {}", path.display()))?
+            .len();
+        if file_size > MAX_MODEL_SIZE {
+            anyhow::bail!(
+                "Model file too large: {:.2} GB (max: 10 GB)",
+                file_size as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
+        }
 
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)
@@ -84,6 +106,34 @@ impl OnnxModel {
         }
     }
 
+    /// Return the shapes of each graph input from the protobuf type info.
+    ///
+    /// Each inner Vec<i64> contains the dimension values.  Dynamic dims
+    /// (symbolic or missing) are returned as -1.  Returns one entry per
+    /// `graph.input` that has tensor type information.
+    pub fn input_shapes(&self) -> Vec<Vec<i64>> {
+        let graph = self.proto.get_graph();
+        let mut shapes = Vec::new();
+
+        for inp in graph.get_input().iter() {
+            if inp.has_field_type() {
+                let type_proto = inp.get_field_type();
+                if type_proto.has_tensor_type() {
+                    let tensor_type = type_proto.get_tensor_type();
+                    if tensor_type.has_shape() {
+                        let shape_proto = tensor_type.get_shape();
+                        let dims: Vec<i64> = shape_proto.get_dim().iter().map(|d| {
+                            let v = d.get_dim_value();
+                            if v > 0 { v } else { -1 }
+                        }).collect();
+                        shapes.push(dims);
+                    }
+                }
+            }
+        }
+        shapes
+    }
+
     pub fn extract_weights(&self) -> Vec<WeightTensor> {
         let mut weights = Vec::new();
         let graph = self.proto.get_graph();
@@ -91,7 +141,9 @@ impl OnnxModel {
         for initializer in graph.get_initializer() {
             let name = initializer.get_name().to_string();
 
-            let shape: Vec<usize> = initializer.get_dims().iter().map(|&d| d as usize).collect();
+            let shape: Vec<usize> = initializer.get_dims().iter()
+                .map(|&d| d.max(0) as usize)
+                .collect();
 
             let data = if initializer.has_raw_data() {
                 let raw = initializer.get_raw_data();
@@ -110,10 +162,20 @@ impl OnnxModel {
         weights
     }
 
+    /// Total size of all weight tensors in bytes (float32).
+    ///
+    /// Prefer computing this from already-extracted weights when available:
+    /// `weights.iter().map(|w| w.size_bytes()).sum()` avoids reparsing.
     pub fn total_size_bytes(&self) -> usize {
-        self.extract_weights()
-            .iter()
-            .map(|w| w.data.len() * std::mem::size_of::<f32>())
+        let graph = self.proto.get_graph();
+        graph.get_initializer().iter()
+            .map(|init| {
+                if init.has_raw_data() {
+                    init.get_raw_data().len()
+                } else {
+                    std::mem::size_of_val(init.get_float_data())
+                }
+            })
             .sum()
     }
 }
@@ -147,44 +209,29 @@ impl OnnxModel {
     /// would give.  True INT4 packing is a v0.4.0 target.
     pub fn save_quantized(
         &mut self,
-        quantized_data: &[(String, Vec<i8>, f32, i8, u8)],
-        path: &str,
+        quantized_data: &[graph_builder::QdqWeightInput],
+        path: impl AsRef<std::path::Path>,
     ) -> Result<()> {
-        use graph_builder::{apply_qdq_transform, ensure_opset_version, QdqWeightInput};
+        let path = path.as_ref();
+        use graph_builder::{apply_qdq_transform, ensure_opset_version};
 
         // --- 1. Opset ≥ 13 (DequantizeLinear per-channel needs it) ---
         ensure_opset_version(&mut self.proto, 13);
 
         // --- 2. Persist per-weight bits in model metadata ---
-        //        load_quantized_info reads these back later.
-        //        If StringStringEntryProto is not available in your onnx crate
-        //        version, this block can be safely commented out; bits will
-        //        default to 8 in load_quantized_info.
-        for (name, _, _, _, bits) in quantized_data.iter() {
+        for inp in quantized_data.iter() {
             let mut prop = onnx::onnx::StringStringEntryProto::new();
-            prop.set_key(format!("quantize_rs.bits.{}", name));
-            prop.set_value(bits.to_string());
+            prop.set_key(format!("quantize_rs.bits.{}", inp.original_name));
+            prop.set_value(inp.bits.to_string());
             self.proto.mut_metadata_props().push(prop);
         }
 
-        // --- 3. Build QdqWeightInput slice ---
-        let inputs: Vec<QdqWeightInput> = quantized_data
-            .iter()
-            .map(|(name, values, scale, zp, bits)| QdqWeightInput {
-                original_name:    name.clone(),
-                quantized_values: values.clone(),
-                scale:            *scale,
-                zero_point:       *zp,
-                bits:             *bits,
-            })
-            .collect();
-
-        // --- 4. Apply QDQ transform to the graph ---
-        apply_qdq_transform(self.proto.mut_graph(), &inputs)?;
+        // --- 3. Apply QDQ transform to the graph ---
+        apply_qdq_transform(self.proto.mut_graph(), quantized_data)?;
 
         // --- 5. Write to disk ---
         let mut file = std::fs::File::create(path)
-            .with_context(|| format!("Failed to create output file: {}", path))?;
+            .with_context(|| format!("Failed to create output file: {}", path.display()))?;
 
         self.proto
             .write_to_writer(&mut file)

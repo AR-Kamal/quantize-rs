@@ -1,6 +1,6 @@
 [package]
 name = "quantize-rs"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["Abdul Rahman Kamal <abdulrahmandev141@gmail.com>"]
 description = "Neural network quantization toolkit for ONNX models"
@@ -18,16 +18,15 @@ tract-onnx = "0.21"
 tract-core = "0.21"
 glob = "0.3"
 rand = "0.8"
+rayon = "1.8"
 
 # ONNX model parsing
 onnx = "0.1.0"
-prost = "0.12"
-protobuf = "1.7" 
+protobuf = "1.7"
 
 # Tensor operations
 ndarray = "0.15"
 ndarray-npy = "0.8"
-image = "0.25"
 
 # CLI interface
 clap = { version = "4.4", features = ["derive"] }
@@ -37,12 +36,9 @@ pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
 
 # Error handling
 anyhow = "1.0"
-thiserror = "1.0"
 
-indicatif = "0.17"
 colored = "2.0"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0" 
 serde_yaml = "0.9"
 toml = "0.8"
 
@@ -71,7 +67,6 @@ path = "src/main.rs"
 [lib]
 name = "quantize_rs"
 path = "src/lib.rs"
-crate-type = ["rlib", "cdylib"]
 
 [[example]]
 name = "basic_quantization"

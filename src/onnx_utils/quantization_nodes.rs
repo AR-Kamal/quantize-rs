@@ -62,7 +62,13 @@ impl DequantLinearNames {
 ///   inputs  = [x (INT8), x_scale (FP32), x_zero_point (INT8)]
 ///   outputs = [y (FP32)]
 ///   y = (x - x_zero_point) × x_scale
-pub fn build_dequantize_linear_node(names: &DequantLinearNames) -> onnx::onnx::NodeProto {
+///
+/// When `axis` is `Some(a)`, the `axis` attribute is set on the node,
+/// enabling per-channel dequantization (opset ≥ 13).
+pub fn build_dequantize_linear_node(
+    names: &DequantLinearNames,
+    axis: Option<usize>,
+) -> onnx::onnx::NodeProto {
     let mut node = onnx::onnx::NodeProto::new();
     node.set_op_type("DequantizeLinear".to_string());
     node.set_name(names.node_name.clone());
@@ -72,6 +78,14 @@ pub fn build_dequantize_linear_node(names: &DequantLinearNames) -> onnx::onnx::N
     node.mut_input().push(names.zp_name.clone());
 
     node.mut_output().push(names.output_name.clone());
+
+    if let Some(a) = axis {
+        let mut attr = onnx::onnx::AttributeProto::new();
+        attr.set_name("axis".to_string());
+        attr.set_field_type(onnx::onnx::AttributeProto_AttributeType::INT);
+        attr.set_i(a as i64);
+        node.mut_attribute().push(attr);
+    }
 
     node
 }
@@ -103,27 +117,46 @@ pub fn build_quantized_weight_tensor(
     t
 }
 
-/// FP32 scalar: the quantization scale.
+/// FP32 scale tensor.
 ///
-/// Rank-0 (no dims) per ONNX scalar convention.
-pub fn build_scale_tensor(names: &DequantLinearNames, scale: f32) -> onnx::onnx::TensorProto {
+/// For per-tensor quantization, `scales` has one element and the tensor
+/// is rank-0 (scalar).  For per-channel, `scales` has one entry per
+/// channel and the tensor is rank-1 with shape `[num_channels]`.
+pub fn build_scale_tensor(names: &DequantLinearNames, scales: &[f32]) -> onnx::onnx::TensorProto {
     let mut t = onnx::onnx::TensorProto::new();
     t.set_name(names.scale_name.clone());
     t.set_data_type(onnx::onnx::TensorProto_DataType::FLOAT);
-    // rank-0: no dims pushed
-    t.mut_float_data().push(scale);
+
+    if scales.len() == 1 {
+        // rank-0 scalar
+        t.mut_float_data().push(scales[0]);
+    } else {
+        // rank-1: [num_channels]
+        t.mut_dims().push(scales.len() as i64);
+        for &s in scales {
+            t.mut_float_data().push(s);
+        }
+    }
     t
 }
 
-/// INT8 scalar: the zero point.
+/// INT8 zero-point tensor.
 ///
-/// Rank-0 (no dims).  Stored as a single raw byte (i8 reinterpret cast).
-pub fn build_zero_point_tensor(names: &DequantLinearNames, zp: i8) -> onnx::onnx::TensorProto {
+/// For per-tensor, `zps` has one element → rank-0 scalar.
+/// For per-channel, `zps` has one per channel → rank-1 `[num_channels]`.
+pub fn build_zero_point_tensor(names: &DequantLinearNames, zps: &[i8]) -> onnx::onnx::TensorProto {
     let mut t = onnx::onnx::TensorProto::new();
     t.set_name(names.zp_name.clone());
     t.set_data_type(onnx::onnx::TensorProto_DataType::INT8);
-    // rank-0: no dims pushed; single byte raw_data
-    t.set_raw_data(vec![zp as u8]);
+
+    if zps.len() == 1 {
+        // rank-0 scalar
+        t.set_raw_data(vec![zps[0] as u8]);
+    } else {
+        // rank-1: [num_channels]
+        t.mut_dims().push(zps.len() as i64);
+        t.set_raw_data(zps.iter().map(|&v| v as u8).collect());
+    }
     t
 }
 
@@ -156,7 +189,7 @@ mod tests {
     #[test]
     fn test_dequantize_linear_node_inputs_outputs() {
         let names = DequantLinearNames::from_original("fc.weight");
-        let node = build_dequantize_linear_node(&names);
+        let node = build_dequantize_linear_node(&names, None);
 
         assert_eq!(node.get_op_type(), "DequantizeLinear");
         assert_eq!(node.get_name(),    "DequantizeLinear_fc.weight");
@@ -170,6 +203,17 @@ mod tests {
         let outputs = node.get_output();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0], "fc.weight");
+        assert!(node.get_attribute().is_empty());
+    }
+
+    #[test]
+    fn test_dequantize_linear_node_with_axis() {
+        let names = DequantLinearNames::from_original("conv.weight");
+        let node = build_dequantize_linear_node(&names, Some(0));
+
+        assert_eq!(node.get_attribute().len(), 1);
+        assert_eq!(node.get_attribute()[0].get_name(), "axis");
+        assert_eq!(node.get_attribute()[0].get_i(), 0);
     }
 
     #[test]
@@ -191,25 +235,45 @@ mod tests {
     }
 
     #[test]
-    fn test_scale_tensor_is_rank0_float() {
+    fn test_scale_tensor_scalar() {
         let names = DequantLinearNames::from_original("w");
-        let t = build_scale_tensor(&names, 0.003921);
+        let t = build_scale_tensor(&names, &[0.003921]);
 
         assert_eq!(t.get_name(),      "w_scale");
         assert_eq!(t.get_data_type(), onnx::onnx::TensorProto_DataType::FLOAT);
-        assert_eq!(t.get_dims().len(), 0, "scale must be rank-0 scalar");
+        assert_eq!(t.get_dims().len(), 0, "single scale must be rank-0 scalar");
         assert!((t.get_float_data()[0] - 0.003921).abs() < 1e-6);
     }
 
     #[test]
-    fn test_zero_point_tensor_is_rank0_int8() {
+    fn test_scale_tensor_per_channel() {
         let names = DequantLinearNames::from_original("w");
-        let t = build_zero_point_tensor(&names, -3);
+        let t = build_scale_tensor(&names, &[0.01, 0.02, 0.03]);
+
+        assert_eq!(t.get_dims().len(), 1);
+        assert_eq!(t.get_dims()[0], 3);
+        assert_eq!(t.get_float_data().len(), 3);
+    }
+
+    #[test]
+    fn test_zero_point_tensor_scalar() {
+        let names = DequantLinearNames::from_original("w");
+        let t = build_zero_point_tensor(&names, &[-3]);
 
         assert_eq!(t.get_name(),      "w_zp");
         assert_eq!(t.get_data_type(), onnx::onnx::TensorProto_DataType::INT8);
-        assert_eq!(t.get_dims().len(), 0, "zp must be rank-0 scalar");
+        assert_eq!(t.get_dims().len(), 0, "single zp must be rank-0 scalar");
         assert_eq!(t.get_raw_data()[0], (-3i8) as u8);
+    }
+
+    #[test]
+    fn test_zero_point_tensor_per_channel() {
+        let names = DequantLinearNames::from_original("w");
+        let t = build_zero_point_tensor(&names, &[-3, 0, 5]);
+
+        assert_eq!(t.get_dims().len(), 1);
+        assert_eq!(t.get_dims()[0], 3);
+        assert_eq!(t.get_raw_data().len(), 3);
     }
 
     #[test]

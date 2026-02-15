@@ -9,19 +9,26 @@ pub mod inference;
 
 pub use inference::ActivationEstimator;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CalibrationDataset {
     pub samples: Vec<Vec<f32>>,
-    
+
     pub shape: Vec<usize>,
-    
-    pub num_samples: usize,
+}
+
+impl std::fmt::Debug for CalibrationDataset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CalibrationDataset")
+            .field("num_samples", &self.samples.len())
+            .field("shape", &self.shape)
+            .finish()
+    }
 }
 
 impl CalibrationDataset {
-    pub fn from_numpy(path: &str) -> Result<Self> {
-        let path = Path::new(path);
-        
+    pub fn from_numpy(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+
         if !path.exists() {
             bail!("File not found: {}", path.display());
         }
@@ -34,9 +41,13 @@ impl CalibrationDataset {
         };
         
         let shape: Vec<usize> = array.shape().to_vec();
-        
+
         if shape.is_empty() {
             bail!("Invalid array shape");
+        }
+
+        if shape.len() < 2 {
+            bail!("Calibration data must be at least 2-dimensional (batch, ...). Got shape {:?}", shape);
         }
         
         let num_samples = shape[0];
@@ -54,29 +65,36 @@ impl CalibrationDataset {
         Ok(Self {
             samples,
             shape: shape[1..].to_vec(),
-            num_samples,
         })
     }
     
-    pub fn random(shape: Vec<usize>, num_samples: usize, range: (f32, f32)) -> Self {
+    pub fn random(shape: Vec<usize>, num_samples: usize, range: (f32, f32)) -> Result<Self> {
+        if shape.is_empty() || shape.contains(&0) {
+            bail!("Invalid shape: {:?} - all dimensions must be > 0", shape);
+        }
+        if num_samples == 0 {
+            bail!("num_samples must be > 0");
+        }
+        if range.0 >= range.1 {
+            bail!("Invalid range: ({}, {}) - min must be less than max", range.0, range.1);
+        }
         use rand::Rng;
         let mut rng = rand::thread_rng();
-        
+
         let sample_size: usize = shape.iter().product();
         let mut samples = Vec::with_capacity(num_samples);
-        
+
         for _ in 0..num_samples {
             let sample: Vec<f32> = (0..sample_size)
                 .map(|_| rng.gen_range(range.0..range.1))
                 .collect();
             samples.push(sample);
         }
-        
-        Self {
+
+        Ok(Self {
             samples,
             shape,
-            num_samples,
-        }
+        })
     }
     
     pub fn from_samples(samples: Vec<Vec<f32>>, shape: Vec<usize>) -> Result<Self> {
@@ -100,13 +118,7 @@ impl CalibrationDataset {
         Ok(Self {
             samples,
             shape,
-            num_samples,
         })
-    }
-    
-    pub fn get_batch(&self, start: usize, size: usize) -> &[Vec<f32>] {
-        let end = (start + size).min(self.num_samples);
-        &self.samples[start..end]
     }
     
     pub fn sample_shape(&self) -> &[usize] {
@@ -114,11 +126,11 @@ impl CalibrationDataset {
     }
     
     pub fn len(&self) -> usize {
-        self.num_samples
+        self.samples.len()
     }
-    
+
     pub fn is_empty(&self) -> bool {
-        self.num_samples == 0
+        self.samples.is_empty()
     }
 }
 
@@ -128,8 +140,8 @@ mod tests {
     
     #[test]
     fn test_random_dataset() {
-        let dataset = CalibrationDataset::random(vec![3, 224, 224], 10, (-1.0, 1.0));
-        
+        let dataset = CalibrationDataset::random(vec![3, 224, 224], 10, (-1.0, 1.0)).unwrap();
+
         assert_eq!(dataset.len(), 10);
         assert_eq!(dataset.sample_shape(), &[3, 224, 224]);
         assert_eq!(dataset.samples[0].len(), 3 * 224 * 224);

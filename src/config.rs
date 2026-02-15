@@ -53,8 +53,8 @@ fn default_bits() -> u8 {
 }
 
 impl Config {
-    pub fn from_file(path: &str) -> Result<Self> {
-        let path = Path::new(path);
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
         let extension = path.extension()
             .and_then(|s| s.to_str())
             .context("Config file has no extension")?;

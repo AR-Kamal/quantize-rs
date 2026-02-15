@@ -1,32 +1,42 @@
 // src/calibration/methods.rs
+use std::fmt;
+use std::str::FromStr;
+
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub enum CalibrationMethod {
+    #[default]
     MinMax,
-    
+
     Percentile(f32),
 
     Entropy,
-    
+
     MSE,
 }
 
-impl Default for CalibrationMethod {
-    fn default() -> Self {
-        CalibrationMethod::MinMax
-    }
-}
 
-impl CalibrationMethod {
-    pub fn name(&self) -> &str {
+impl fmt::Display for CalibrationMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CalibrationMethod::MinMax => "MinMax",
-            CalibrationMethod::Percentile(_p) => "Percentile",
-            CalibrationMethod::Entropy => "Entropy",
-            CalibrationMethod::MSE => "MSE",
+            CalibrationMethod::MinMax => write!(f, "MinMax"),
+            CalibrationMethod::Percentile(_p) => write!(f, "Percentile"),
+            CalibrationMethod::Entropy => write!(f, "Entropy"),
+            CalibrationMethod::MSE => write!(f, "MSE"),
         }
     }
 }
 
-// TODO: Implement optimization functions in Phase 5
-// pub fn optimize_kl_divergence(stats: &ActivationStats) -> (f32, f32) { ... }
-// pub fn optimize_mse(stats: &ActivationStats) -> (f32, f32) { ... }
+impl FromStr for CalibrationMethod {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "minmax" => Ok(CalibrationMethod::MinMax),
+            "percentile" => Ok(CalibrationMethod::Percentile(99.9)),
+            "entropy" => Ok(CalibrationMethod::Entropy),
+            "mse" => Ok(CalibrationMethod::MSE),
+            _ => Err(anyhow::anyhow!("Unknown calibration method: '{}'. Valid methods: minmax, percentile, entropy, mse", s)),
+        }
+    }
+}

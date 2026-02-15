@@ -1,4 +1,3 @@
-// src/quantization/mod.rs
 use anyhow::{bail, Result};
 
 #[derive(Debug, Clone)]
@@ -38,18 +37,17 @@ impl QuantConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum QuantMode {
-    Int8,
-    Int4,
-}
-
 #[derive(Debug, Clone)]
 pub struct QuantParams {
-    pub scale: f32,
-    pub zero_point: i8,
-    pub min: f32,
-    pub max: f32,
+    scale: f32,
+    zero_point: i8,
+}
+
+impl QuantParams {
+    /// Quantization scale factor.
+    pub fn scale(&self) -> f32 { self.scale }
+    /// Quantization zero point.
+    pub fn zero_point(&self) -> i8 { self.zero_point }
 }
 
 impl QuantParams {
@@ -78,12 +76,13 @@ impl QuantParams {
         QuantParams {
             scale,
             zero_point,
-            min,
-            max,
         }
     }
 
     pub fn quantize(&self, value: f32) -> i8 {
+        if !value.is_finite() {
+            return self.zero_point;
+        }
         let quantized = (value / self.scale).round() + (self.zero_point as f32);
         quantized.clamp(-128.0, 127.0) as i8
     }
@@ -95,11 +94,17 @@ impl QuantParams {
 
 #[derive(Debug, Clone)]
 pub struct QuantizedTensor {
-    pub data: Vec<i8>,
-    pub shape: Vec<usize>,
-    pub params: QuantParams,
-    pub per_channel: bool,
-    pub channel_params: Option<Vec<QuantParams>>,
+    pub(crate) data: Vec<i8>,
+    pub(crate) shape: Vec<usize>,
+    pub(crate) params: QuantParams,
+    pub(crate) per_channel: bool,
+    pub(crate) channel_params: Option<Vec<QuantParams>>,
+}
+
+impl QuantizedTensor {
+    pub fn shape(&self) -> &[usize] { &self.shape }
+    pub fn params(&self) -> &QuantParams { &self.params }
+    pub fn is_per_channel(&self) -> bool { self.per_channel }
 }
 
 impl QuantizedTensor {
@@ -108,8 +113,13 @@ impl QuantizedTensor {
             bail!("Cannot quantize empty tensor");
         }
 
-        let min = data.iter().copied().fold(f32::INFINITY, f32::min);
-        let max = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let expected_len: usize = shape.iter().product();
+        if expected_len != data.len() {
+            bail!("Shape {:?} expects {} elements but got {}", shape, expected_len, data.len());
+        }
+
+        let min = data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
+        let max = data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
 
         let params = QuantParams::from_range(min, max);
 
@@ -132,6 +142,11 @@ impl QuantizedTensor {
             bail!("Cannot quantize empty tensor");
         }
 
+        let expected_len: usize = shape.iter().product();
+        if expected_len != data.len() {
+            bail!("Shape {:?} expects {} elements but got {}", shape, expected_len, data.len());
+        }
+
         let params = QuantParams::from_range(min, max);
 
         let quantized_data: Vec<i8> = data.iter()
@@ -146,39 +161,35 @@ impl QuantizedTensor {
             channel_params: None,
         })
     }
-    
-    /// Quantize with per-channel
+
+    /// Quantize with per-channel (axis 0 only).
     pub fn from_f32_per_channel(
         data: &[f32],
         shape: Vec<usize>,
-        channel_axis: usize,
     ) -> Result<Self> {
-
-        
         if data.is_empty() {
             bail!("Cannot quantize empty tensor");
         }
 
-        // Get number of channels
-        if channel_axis >= shape.len() {
-            bail!("Channel axis {} out of bounds for shape {:?}", channel_axis, shape);
+        if shape.is_empty() {
+            bail!("Cannot do per-channel quantization on scalar");
         }
 
-        let num_channels = shape[channel_axis];
-        
-        // Calculate elements per channel
-        let total_elements: usize = shape.iter().product();
-        let _elements_per_channel = total_elements / num_channels;
+        let expected_len: usize = shape.iter().product();
+        if expected_len != data.len() {
+            bail!("Shape {:?} expects {} elements but got {}", shape, expected_len, data.len());
+        }
 
-        // Quantize each channel separately
+        let num_channels = shape[0];
+
         let mut channel_params = Vec::new();
         let mut quantized_data = Vec::with_capacity(data.len());
 
         for channel_idx in 0..num_channels {
-            let channel_data = extract_channel(data, &shape, channel_axis, channel_idx);
+            let channel_data = extract_channel(data, &shape, channel_idx)?;
 
-            let min = channel_data.iter().copied().fold(f32::INFINITY, f32::min);
-            let max = channel_data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let min = channel_data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
+            let max = channel_data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
 
             let params = QuantParams::from_range(min, max);
             channel_params.push(params.clone());
@@ -203,15 +214,18 @@ impl QuantizedTensor {
     pub fn to_f32(&self) -> Vec<f32> {
         if self.per_channel {
             if let Some(ref channel_params) = self.channel_params {
+                if channel_params.is_empty() {
+                    return self.data.iter().map(|&v| self.params.dequantize(v)).collect();
+                }
+                let elements_per_channel = self.data.len() / channel_params.len();
                 self.data.iter()
                     .enumerate()
                     .map(|(i, &v)| {
-                        let channel_idx = i / (self.data.len() / channel_params.len());
+                        let channel_idx = (i / elements_per_channel).min(channel_params.len() - 1);
                         channel_params[channel_idx].dequantize(v)
                     })
                     .collect()
             } else {
-                // Fallback to per-tensor
                 self.data.iter()
                     .map(|&v| self.params.dequantize(v))
                     .collect()
@@ -246,12 +260,18 @@ impl QuantizedTensor {
 /// INT4 Quantized tensor with optional bit packing
 #[derive(Debug, Clone)]
 pub struct QuantizedTensorInt4 {
-    pub data: Vec<i8>,
-    pub packed_data: Option<Vec<u8>>,
-    pub shape: Vec<usize>,
-    pub params: QuantParamsInt4,
-    pub per_channel: bool,
-    pub channel_params: Option<Vec<QuantParamsInt4>>,
+    pub(crate) data: Vec<i8>,
+    pub(crate) packed_data: Option<Vec<u8>>,
+    pub(crate) shape: Vec<usize>,
+    pub(crate) params: QuantParamsInt4,
+    pub(crate) per_channel: bool,
+    pub(crate) channel_params: Option<Vec<QuantParamsInt4>>,
+}
+
+impl QuantizedTensorInt4 {
+    pub fn shape(&self) -> &[usize] { &self.shape }
+    pub fn params(&self) -> &QuantParamsInt4 { &self.params }
+    pub fn is_per_channel(&self) -> bool { self.per_channel }
 }
 
 impl QuantizedTensorInt4 {
@@ -260,8 +280,13 @@ impl QuantizedTensorInt4 {
             bail!("Cannot quantize empty tensor");
         }
 
-        let min = data.iter().copied().fold(f32::INFINITY, f32::min);
-        let max = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let expected_len: usize = shape.iter().product();
+        if expected_len != data.len() {
+            bail!("Shape {:?} expects {} elements but got {}", shape, expected_len, data.len());
+        }
+
+        let min = data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
+        let max = data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
 
         let params = QuantParamsInt4::from_range(min, max);
 
@@ -284,6 +309,11 @@ impl QuantizedTensorInt4 {
             bail!("Cannot quantize empty tensor");
         }
 
+        let expected_len: usize = shape.iter().product();
+        if expected_len != data.len() {
+            bail!("Shape {:?} expects {} elements but got {}", shape, expected_len, data.len());
+        }
+
         // Use provided range instead of computing from data
         let params = QuantParamsInt4::from_range(min, max);
 
@@ -301,32 +331,34 @@ impl QuantizedTensorInt4 {
         })
     }
 
+    /// Quantize with per-channel (axis 0 only).
     pub fn from_f32_per_channel(
         data: &[f32],
         shape: Vec<usize>,
-        channel_axis: usize,
     ) -> Result<Self> {
         if data.is_empty() {
             bail!("Cannot quantize empty tensor");
         }
 
-        if channel_axis >= shape.len() {
-            bail!("Channel axis {} out of bounds for shape {:?}", channel_axis, shape);
+        if shape.is_empty() {
+            bail!("Cannot do per-channel quantization on scalar");
         }
 
-        let num_channels = shape[channel_axis];
-        
-        let total_elements: usize = shape.iter().product();
-        let _elements_per_channel = total_elements / num_channels;
+        let expected_len: usize = shape.iter().product();
+        if expected_len != data.len() {
+            bail!("Shape {:?} expects {} elements but got {}", shape, expected_len, data.len());
+        }
+
+        let num_channels = shape[0];
 
         let mut channel_params = Vec::new();
         let mut quantized_data = Vec::with_capacity(data.len());
 
         for channel_idx in 0..num_channels {
-            let channel_data = extract_channel(data, &shape, channel_axis, channel_idx);
+            let channel_data = extract_channel(data, &shape, channel_idx)?;
 
-            let min = channel_data.iter().copied().fold(f32::INFINITY, f32::min);
-            let max = channel_data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let min = channel_data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
+            let max = channel_data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
 
             let params = QuantParamsInt4::from_range(min, max);
             channel_params.push(params.clone());
@@ -362,13 +394,17 @@ impl QuantizedTensorInt4 {
 
     pub fn to_f32(&self) -> Vec<f32> {
         let data = self.ensure_unpacked();
-        
+
         if self.per_channel {
             if let Some(ref channel_params) = self.channel_params {
+                if channel_params.is_empty() {
+                    return data.iter().map(|&v| self.params.dequantize(v)).collect();
+                }
+                let elements_per_channel = data.len() / channel_params.len();
                 data.iter()
                     .enumerate()
                     .map(|(i, &v)| {
-                        let channel_idx = i / (data.len() / channel_params.len());
+                        let channel_idx = (i / elements_per_channel).min(channel_params.len() - 1);
                         channel_params[channel_idx].dequantize(v)
                     })
                     .collect()
@@ -400,7 +436,7 @@ impl QuantizedTensorInt4 {
         if let Some(ref packed) = self.packed_data {
             packed.len()
         } else {
-            (self.data.len() + 1) / 2
+            self.data.len().div_ceil(2)
         }
     }
 
@@ -426,8 +462,8 @@ impl QuantizedTensorInt4 {
 
 
 fn pack_int4_pair(val1: i8, val2: i8) -> u8 {
-    debug_assert!(val1 >= -8 && val1 <= 7, "val1 out of INT4 range: {}", val1);
-    debug_assert!(val2 >= -8 && val2 <= 7, "val2 out of INT4 range: {}", val2);
+    debug_assert!((-8..=7).contains(&val1), "val1 out of INT4 range: {}", val1);
+    debug_assert!((-8..=7).contains(&val2), "val2 out of INT4 range: {}", val2);
     
     // Convert to 4-bit representation
     let nibble1 = (val1 & 0x0F) as u8;
@@ -458,7 +494,7 @@ fn unpack_int4_pair(byte: u8) -> (i8, i8) {
 }
 
 pub fn pack_int4(values: &[i8]) -> Vec<u8> {
-    let mut packed = Vec::with_capacity((values.len() + 1) / 2);
+    let mut packed = Vec::with_capacity(values.len().div_ceil(2));
     
     for chunk in values.chunks(2) {
         let val1 = chunk[0];
@@ -486,28 +522,41 @@ pub fn unpack_int4(packed: &[u8], num_values: usize) -> Vec<i8> {
     values
 }
 
-// Helper function
-fn extract_channel(
-    data: &[f32],
-    shape: &[usize],
-    channel_axis: usize,
-    channel_idx: usize,
-) -> Vec<f32> {
-    let num_channels = shape[channel_axis];
+/// Extract contiguous data for a single channel along axis 0.
+///
+/// Only correct for axis 0 (the leading dimension), which is the standard
+/// layout for weight tensors (e.g. [out_channels, in_channels, H, W]).
+fn extract_channel(data: &[f32], shape: &[usize], channel_idx: usize) -> Result<Vec<f32>> {
+    if shape.is_empty() {
+        bail!("Cannot extract channel from empty shape");
+    }
+    let num_channels = shape[0];
+    if num_channels == 0 {
+        bail!("Number of channels is 0");
+    }
+    if channel_idx >= num_channels {
+        bail!("Channel index {} out of bounds for {} channels", channel_idx, num_channels);
+    }
+    if !data.len().is_multiple_of(num_channels) {
+        bail!("Data length {} not evenly divisible by {} channels", data.len(), num_channels);
+    }
     let elements_per_channel = data.len() / num_channels;
-    
     let start = channel_idx * elements_per_channel;
     let end = start + elements_per_channel;
-    
-    data[start..end].to_vec()
+    Ok(data[start..end].to_vec())
 }
 
 #[derive(Debug, Clone)]
 pub struct QuantParamsInt4 {
-    pub scale: f32,
-    pub zero_point: i8,
-    pub min: f32,
-    pub max: f32,
+    scale: f32,
+    zero_point: i8,
+}
+
+impl QuantParamsInt4 {
+    /// Quantization scale factor.
+    pub fn scale(&self) -> f32 { self.scale }
+    /// Quantization zero point.
+    pub fn zero_point(&self) -> i8 { self.zero_point }
 }
 
 impl QuantParamsInt4 {
@@ -534,12 +583,13 @@ impl QuantParamsInt4 {
         QuantParamsInt4 {
             scale,
             zero_point,
-            min,
-            max,
         }
     }
 
     pub fn quantize(&self, value: f32) -> i8 {
+        if !value.is_finite() {
+            return self.zero_point;
+        }
         let quantized = (value / self.scale).round() + (self.zero_point as f32);
         quantized.clamp(-8.0, 7.0) as i8
     }
@@ -570,13 +620,15 @@ impl QuantizedTensorType {
         }
     }
 
+    #[must_use]
     pub fn quantization_error(&self, original: &[f32]) -> f32 {
         match self {
             QuantizedTensorType::Int8(t) => t.quantization_error(original),
             QuantizedTensorType::Int4(t) => t.quantization_error(original),
         }
     }
-    
+
+    #[must_use]
     pub fn data(&self) -> Vec<i8> {
         match self {
             QuantizedTensorType::Int8(t) => t.data.clone(),
@@ -584,32 +636,95 @@ impl QuantizedTensorType {
         }
     }
 
-        pub fn get_scale_zero_point(&self) -> (f32, i8) {
+    pub fn get_scale_zero_point(&self) -> (f32, i8) {
         match self {
             QuantizedTensorType::Int8(t) => (t.params.scale, t.params.zero_point),
             QuantizedTensorType::Int4(t) => (t.params.scale, t.params.zero_point),
         }
     }
-    
+
+    /// Return all per-channel scales and zero-points.
+    ///
+    /// For per-tensor quantization, returns single-element vectors.
+    /// For per-channel, returns one entry per channel.
+    pub fn get_all_scales_zero_points(&self) -> (Vec<f32>, Vec<i8>) {
+        match self {
+            QuantizedTensorType::Int8(t) => {
+                if let Some(ref cp) = t.channel_params {
+                    (
+                        cp.iter().map(|p| p.scale).collect(),
+                        cp.iter().map(|p| p.zero_point).collect(),
+                    )
+                } else {
+                    (vec![t.params.scale], vec![t.params.zero_point])
+                }
+            }
+            QuantizedTensorType::Int4(t) => {
+                if let Some(ref cp) = t.channel_params {
+                    (
+                        cp.iter().map(|p| p.scale).collect(),
+                        cp.iter().map(|p| p.zero_point).collect(),
+                    )
+                } else {
+                    (vec![t.params.scale], vec![t.params.zero_point])
+                }
+            }
+        }
+    }
+
+    pub fn is_per_channel(&self) -> bool {
+        match self {
+            QuantizedTensorType::Int8(t) => t.per_channel,
+            QuantizedTensorType::Int4(t) => t.per_channel,
+        }
+    }
+
+    #[must_use]
     pub fn bits(&self) -> u8 {
         match self {
             QuantizedTensorType::Int8(_) => 8,
             QuantizedTensorType::Int4(_) => 4,
         }
     }
-    
+
     pub fn is_int8(&self) -> bool {
         matches!(self, QuantizedTensorType::Int8(_))
     }
-    
+
     pub fn is_int4(&self) -> bool {
         matches!(self, QuantizedTensorType::Int4(_))
+    }
+
+    /// Borrow quantized data without cloning.
+    ///
+    /// Returns `None` for packed INT4 tensors (must use `data()` which unpacks).
+    pub fn data_ref(&self) -> Option<&[i8]> {
+        match self {
+            QuantizedTensorType::Int8(t) => Some(&t.data),
+            QuantizedTensorType::Int4(t) => {
+                if t.packed_data.is_some() {
+                    None // packed: caller must use data() to unpack
+                } else {
+                    Some(&t.data)
+                }
+            }
+        }
     }
 }
 
 pub struct Quantizer {
     config: QuantConfig,
     calibration_stats: Option<std::collections::HashMap<String, crate::calibration::stats::ActivationStats>>,
+}
+
+impl std::fmt::Debug for Quantizer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let stats_count = self.calibration_stats.as_ref().map(|m| m.len());
+        f.debug_struct("Quantizer")
+            .field("config", &self.config)
+            .field("calibration_stats_count", &stats_count)
+            .finish()
+    }
 }
 
 impl Quantizer {
@@ -641,25 +756,25 @@ impl Quantizer {
             if let Some(stats) = stats_map.get(name) {
                 if let Some(method) = self.config.calibration_method {
                     use crate::calibration::stats::calculate_optimal_range;
-                    
+
                     let sample_data = sample_from_activation_stats(stats, 1000);
                     calculate_optimal_range(&sample_data, method)
                 } else {
-                    (stats.min, stats.max)
+                    (stats.min(), stats.max())
                 }
             } else {
                 // No stats for this layer, use data min/max
-                let min = data.iter().copied().fold(f32::INFINITY, f32::min);
-                let max = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let min = data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
+                let max = data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
                 (min, max)
             }
         } else {
             // No calibration, use data min/max
-            let min = data.iter().copied().fold(f32::INFINITY, f32::min);
-            let max = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let min = data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
+            let max = data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
             (min, max)
         };
-        
+
         // Quantize with optimal range
         self.quantize_with_range(data, shape, min, max)
     }
@@ -668,7 +783,7 @@ impl Quantizer {
         match self.config.bits {
             8 => {
                 let tensor = if self.config.per_channel && shape.len() >= 2 {
-                    QuantizedTensor::from_f32_per_channel(data, shape, 0)?
+                    QuantizedTensor::from_f32_per_channel(data, shape)?
                 } else {
                     QuantizedTensor::from_f32(data, shape)?
                 };
@@ -676,7 +791,7 @@ impl Quantizer {
             },
             4 => {
                 let mut tensor = if self.config.per_channel && shape.len() >= 2 {
-                    QuantizedTensorInt4::from_f32_per_channel(data, shape, 0)?
+                    QuantizedTensorInt4::from_f32_per_channel(data, shape)?
                 } else {
                     QuantizedTensorInt4::from_f32(data, shape)?
                 };
@@ -687,7 +802,12 @@ impl Quantizer {
         }
     }
     
-    /// Quantize with specific range (for calibration)
+    /// Quantize with specific range (for calibration).
+    ///
+    /// When `per_channel` is enabled, the provided `min`/`max` are ignored
+    /// because per-channel quantization computes separate ranges from the
+    /// weight data for each channel.  The calibration range (derived from
+    /// activation statistics) applies to per-tensor mode only.
     fn quantize_with_range(
         &self,
         data: &[f32],
@@ -698,7 +818,7 @@ impl Quantizer {
         match self.config.bits {
             8 => {
                 let tensor = if self.config.per_channel && shape.len() >= 2 {
-                    QuantizedTensor::from_f32_per_channel(data, shape, 0)?
+                    QuantizedTensor::from_f32_per_channel(data, shape)?
                 } else {
                     QuantizedTensor::from_f32_with_range(data, shape, min, max)?
                 };
@@ -706,7 +826,7 @@ impl Quantizer {
             },
             4 => {
                 let mut tensor = if self.config.per_channel && shape.len() >= 2 {
-                    QuantizedTensorInt4::from_f32_per_channel(data, shape, 0)?
+                    QuantizedTensorInt4::from_f32_per_channel(data, shape)?
                 } else {
                     QuantizedTensorInt4::from_f32_with_range(data, shape, min, max)?
                 };
@@ -718,17 +838,46 @@ impl Quantizer {
     }
 }
 
-/// Helper: Sample data from activation statistics
+/// Sample synthetic data from the observed activation histogram distribution.
 fn sample_from_activation_stats(stats: &crate::calibration::stats::ActivationStats, n: usize) -> Vec<f32> {
     use rand::Rng;
-    let mut rng = rand::thread_rng();
-    
-    (0..n)
-        .map(|_| {
-            let sample = rng.gen::<f32>() * stats.std + stats.mean;
-            sample.clamp(stats.min, stats.max)
-        })
-        .collect()
+
+    let histogram = stats.histogram_data();
+    if histogram.is_empty() {
+        // Fallback to uniform
+        let mut rng = rand::thread_rng();
+        let range = stats.max() - stats.min();
+        if !range.is_finite() || range.abs() < 1e-8 {
+            return vec![stats.mean(); n];
+        }
+        return (0..n).map(|_| rng.gen::<f32>() * range + stats.min()).collect();
+    }
+
+    let total_count: usize = histogram.iter().map(|&(_, c)| c).sum();
+    if total_count == 0 {
+        let mut rng = rand::thread_rng();
+        let range = stats.max() - stats.min();
+        if !range.is_finite() || range.abs() < 1e-8 {
+            return vec![stats.mean(); n];
+        }
+        return (0..n).map(|_| rng.gen::<f32>() * range + stats.min()).collect();
+    }
+
+    let mut samples = Vec::with_capacity(n);
+    for &(value, count) in &histogram {
+        let num_samples = ((count as f64 / total_count as f64) * n as f64).round() as usize;
+        for _ in 0..num_samples {
+            samples.push(value);
+        }
+    }
+
+    // Trim or pad to exactly n
+    samples.truncate(n);
+    while samples.len() < n {
+        samples.push(stats.mean());
+    }
+
+    samples
 }
 #[cfg(test)]
 mod tests {
@@ -770,7 +919,7 @@ mod tests {
         
         let shape = vec![2, 100];
         
-        let quantized = QuantizedTensor::from_f32_per_channel(&data, shape, 0).unwrap();
+        let quantized = QuantizedTensor::from_f32_per_channel(&data, shape).unwrap();
         
         assert!(quantized.per_channel);
         assert!(quantized.channel_params.is_some());
@@ -805,7 +954,7 @@ mod tests {
         let per_tensor_error = per_tensor.quantization_error(&data);
         
         // Per-channel quantization
-        let per_channel = QuantizedTensor::from_f32_per_channel(&data, shape, 0).unwrap();
+        let per_channel = QuantizedTensor::from_f32_per_channel(&data, shape).unwrap();
         let per_channel_error = per_channel.quantization_error(&data);
         
         println!("Per-tensor error:  {:.8}", per_tensor_error);
@@ -833,7 +982,7 @@ mod tests {
         let per_tensor = QuantizedTensor::from_f32(&data, shape.clone()).unwrap();
         let per_tensor_error = per_tensor.quantization_error(&data);
         
-        let per_channel = QuantizedTensor::from_f32_per_channel(&data, shape, 0).unwrap();
+        let per_channel = QuantizedTensor::from_f32_per_channel(&data, shape).unwrap();
         let per_channel_error = per_channel.quantization_error(&data);
         
         println!("Per-tensor MSE:  {:.8}", per_tensor_error);
@@ -997,7 +1146,7 @@ mod tests {
         
         let shape = vec![2, 100];
         
-        let quantized = QuantizedTensorInt4::from_f32_per_channel(&data, shape, 0).unwrap();
+        let quantized = QuantizedTensorInt4::from_f32_per_channel(&data, shape).unwrap();
         
         assert!(quantized.per_channel);
         assert!(quantized.channel_params.is_some());
@@ -1045,7 +1194,7 @@ mod tests {
         
         let shape = vec![64, 3, 3, 3];
         
-        let quantized = QuantizedTensorInt4::from_f32_per_channel(&data, shape, 0).unwrap();
+        let quantized = QuantizedTensorInt4::from_f32_per_channel(&data, shape).unwrap();
         
         assert_eq!(quantized.data.len(), size);
         assert_eq!(quantized.channel_params.as_ref().unwrap().len(), 64);
@@ -1256,7 +1405,7 @@ mod tests {
         
         let shape = vec![2, 500];
         
-        let mut quantized = QuantizedTensorInt4::from_f32_per_channel(&data, shape, 0).unwrap();
+        let mut quantized = QuantizedTensorInt4::from_f32_per_channel(&data, shape).unwrap();
         
         let error_before = quantized.quantization_error(&data);
         println!("Error before packing: {:.8}", error_before);
@@ -1450,9 +1599,8 @@ mod tests {
                 let per_tensor_error = per_tensor.quantization_error(&weight.data);
                 
                 let per_channel_result = QuantizedTensorInt4::from_f32_per_channel(
-                    &weight.data, 
-                    weight.shape.clone(), 
-                    0
+                    &weight.data,
+                    weight.shape.clone(),
                 );
                 
                 if let Ok(per_channel) = per_channel_result {

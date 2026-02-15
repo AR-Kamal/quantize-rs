@@ -3,9 +3,17 @@ use clap::{Parser, Subcommand};
 use colored::*;
 
 mod cli;
-mod config;
 
 use cli::commands;
+
+fn parse_bits(s: &str) -> Result<u8, String> {
+    let bits: u8 = s.parse().map_err(|_| format!("'{}' is not a valid number", s))?;
+    if bits == 4 || bits == 8 {
+        Ok(bits)
+    } else {
+        Err(format!("bits must be 4 or 8, got {}", bits))
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -28,7 +36,7 @@ enum Commands {
         #[arg(short, long, default_value = "model_quantized.onnx")]
         output: String,
 
-        #[arg(short, long, default_value = "8")]
+        #[arg(short, long, default_value = "8", value_parser = parse_bits)]
         bits: u8,
 
         #[arg(long)]
@@ -42,7 +50,7 @@ enum Commands {
         #[arg(short, long, required = true)]
         output: String,
 
-        #[arg(short, long, default_value = "8")]
+        #[arg(short, long, default_value = "8", value_parser = parse_bits)]
         bits: u8,
 
         #[arg(long)]
@@ -97,12 +105,12 @@ enum Commands {
         #[arg(short, long, default_value = "model_calibrated.onnx")]
         output: String,
 
-        #[arg(short, long, default_value = "8")]
+        #[arg(short, long, default_value = "8", value_parser = parse_bits)]
         bits: u8,
 
         #[arg(long)]
         per_channel: bool,
-        
+
         #[arg(long, default_value = "percentile")]
         method: String,
     },
@@ -112,7 +120,7 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    println!("{}", "quantize-rs v0.1.0".bold().cyan());
+    println!("{}", format!("quantize-rs v{}", env!("CARGO_PKG_VERSION")).bold().cyan());
     println!();
 
     match cli.command {
@@ -122,11 +130,6 @@ fn main() -> Result<()> {
             bits,
             per_channel,
         } => {
-            if bits != 4 && bits != 8 {
-                eprintln!("Error: bits must be 4 or 8");
-                std::process::exit(1);
-            }
-            
             commands::quantize(&input, &output, bits, per_channel)?;
         }
         Commands::Batch {
@@ -167,12 +170,6 @@ fn main() -> Result<()> {
             per_channel,
             method,
         } => {
-            // Validate bits
-            if bits != 4 && bits != 8 {
-                eprintln!("Error: bits must be 4 or 8");
-                std::process::exit(1);
-            }
-            
             commands::calibrate(&input, &data, &output, bits, per_channel, &method)?;
         }
     }
