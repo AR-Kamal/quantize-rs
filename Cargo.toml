@@ -1,6 +1,6 @@
 [package]
 name = "quantize-rs"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["Abdul Rahman Kamal <abdulrahmandev141@gmail.com>"]
 description = "Neural network quantization toolkit for ONNX models"
@@ -48,6 +48,7 @@ python = ["pyo3"]
 [dev-dependencies]
 approx = "0.5"
 criterion = "0.5"
+tempfile = "3"
 
 # Maturin looks for this section when building Python wheels
 [package.metadata.maturin]

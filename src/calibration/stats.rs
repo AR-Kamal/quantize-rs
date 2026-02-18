@@ -1,7 +1,16 @@
+//! Incremental activation statistics (min, max, mean, std, histogram).
+//!
+//! [`ActivationStats`] can be built from a single batch with [`from_data`](ActivationStats::from_data)
+//! and then incrementally extended with [`update`](ActivationStats::update).
+
 use crate::calibration::methods::CalibrationMethod;
 
 const NUM_BINS: usize = 256;
 
+/// Incremental activation statistics for a single layer.
+///
+/// Tracks min, max, mean, standard deviation, and a 256-bin histogram.
+/// Supports incremental updates via Chan's parallel algorithm.
 #[derive(Debug, Clone)]
 pub struct ActivationStats {
     min: f32,
@@ -32,6 +41,7 @@ impl ActivationStats {
 }
 
 impl ActivationStats {
+    /// Create stats from a single batch of observations.
     pub fn from_data(data: &[f32]) -> Self {
         if data.is_empty() {
             return Self::default();
@@ -63,6 +73,7 @@ impl ActivationStats {
         }
     }
 
+    /// Incrementally merge a new batch of observations into the stats.
     pub fn update(&mut self, data: &[f32]) {
         if data.is_empty() {
             return;
@@ -114,6 +125,7 @@ impl ActivationStats {
         self.max = new_max;
     }
 
+    /// Estimate the value at percentile `p` (0--100) from the histogram.
     pub fn percentile(&self, p: f32) -> f32 {
         if self.histogram_bins.is_empty() {
             return self.min;
@@ -260,6 +272,7 @@ mod tests {
     }
 }
 
+/// Compute the optimal quantization range for `data` using the given method.
 pub fn calculate_optimal_range(
     data: &[f32],
     method: CalibrationMethod,

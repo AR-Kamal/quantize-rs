@@ -5,7 +5,7 @@
 pub mod graph_builder;
 pub mod quantization_nodes;
 
-use anyhow::{Context, Result};
+use crate::errors::{QuantizeError, Result};
 use protobuf::Message;
 use std::fs;
 use std::io::Read;
@@ -17,6 +17,10 @@ pub use graph_builder::ConnectivityReport;
 // Core types
 // ===========================================================================
 
+/// An ONNX model loaded from a protobuf file.
+///
+/// Provides methods for inspecting, extracting weights, saving quantized
+/// models, and validating graph connectivity.
 pub struct OnnxModel {
     proto: onnx::onnx::ModelProto,
 }
@@ -31,21 +35,33 @@ impl std::fmt::Debug for OnnxModel {
     }
 }
 
+/// Summary of an ONNX model's structure.
 #[derive(Debug)]
 pub struct ModelInfo {
+    /// Graph name from the protobuf.
     pub name: String,
+    /// Model version from the protobuf.
     pub version: i64,
+    /// Number of computation nodes in the graph.
     pub num_nodes: usize,
+    /// Names of the graph inputs.
     pub inputs: Vec<String>,
+    /// Names of the graph outputs.
     pub outputs: Vec<String>,
 }
 
+/// Metadata about a quantized weight recovered from a QDQ-format model.
 #[derive(Debug, Clone)]
 pub struct QuantizedWeightInfo {
+    /// Original weight name (without `_quantized` suffix).
     pub name: String,
+    /// Quantization bit width (4 or 8).
     pub bits: u8,
+    /// Quantization scale factor.
     pub scale: f32,
+    /// Quantization zero point.
     pub zero_point: i8,
+    /// Number of elements in the quantized tensor.
     pub original_length: usize,
 }
 
@@ -54,34 +70,56 @@ pub struct QuantizedWeightInfo {
 // ===========================================================================
 
 impl OnnxModel {
+    /// Load an ONNX model from a file path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuantizeError::ModelLoad`] if the file cannot be opened,
+    /// is too large (>10 GB), or contains invalid protobuf data.
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
         let mut file =
-            fs::File::open(path).with_context(|| format!("Failed to open ONNX file: {}", path.display()))?;
+            fs::File::open(path).map_err(|e| QuantizeError::ModelLoad {
+                path: path.to_path_buf(),
+                reason: format!("Failed to open ONNX file: {e}"),
+            })?;
 
         const MAX_MODEL_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10 GB
         let file_size = file.metadata()
-            .with_context(|| format!("Failed to read metadata for: {}", path.display()))?
+            .map_err(|e| QuantizeError::ModelLoad {
+                path: path.to_path_buf(),
+                reason: format!("Failed to read metadata: {e}"),
+            })?
             .len();
         if file_size > MAX_MODEL_SIZE {
-            anyhow::bail!(
-                "Model file too large: {:.2} GB (max: 10 GB)",
-                file_size as f64 / (1024.0 * 1024.0 * 1024.0)
-            );
+            return Err(QuantizeError::ModelLoad {
+                path: path.to_path_buf(),
+                reason: format!(
+                    "Model file too large: {:.2} GB (max: 10 GB)",
+                    file_size as f64 / (1024.0 * 1024.0 * 1024.0)
+                ),
+            });
         }
 
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)
-            .context("Failed to read ONNX file")?;
+            .map_err(|e| QuantizeError::ModelLoad {
+                path: path.to_path_buf(),
+                reason: format!("Failed to read ONNX file: {e}"),
+            })?;
 
         let mut proto = onnx::onnx::ModelProto::new();
         proto
             .merge_from_bytes(&buffer)
-            .context("Failed to parse ONNX protobuf")?;
+            .map_err(|e| QuantizeError::ModelLoad {
+                path: path.to_path_buf(),
+                reason: format!("Failed to parse ONNX protobuf: {e}"),
+            })?;
 
         Ok(Self { proto })
     }
 
+    /// Return a summary of the model's structure.
     pub fn info(&self) -> ModelInfo {
         let graph = self.proto.get_graph();
 
@@ -108,7 +146,7 @@ impl OnnxModel {
 
     /// Return the shapes of each graph input from the protobuf type info.
     ///
-    /// Each inner Vec<i64> contains the dimension values.  Dynamic dims
+    /// Each inner `Vec<i64>` contains the dimension values.  Dynamic dims
     /// (symbolic or missing) are returned as -1.  Returns one entry per
     /// `graph.input` that has tensor type information.
     pub fn input_shapes(&self) -> Vec<Vec<i64>> {
@@ -134,6 +172,7 @@ impl OnnxModel {
         shapes
     }
 
+    /// Extract all FP32 weight tensors from the model's initializers.
     pub fn extract_weights(&self) -> Vec<WeightTensor> {
         let mut weights = Vec::new();
         let graph = self.proto.get_graph();
@@ -231,11 +270,17 @@ impl OnnxModel {
 
         // --- 5. Write to disk ---
         let mut file = std::fs::File::create(path)
-            .with_context(|| format!("Failed to create output file: {}", path.display()))?;
+            .map_err(|e| QuantizeError::ModelSave {
+                path: path.to_path_buf(),
+                reason: format!("Failed to create output file: {e}"),
+            })?;
 
         self.proto
             .write_to_writer(&mut file)
-            .context("Failed to write ONNX model")?;
+            .map_err(|e| QuantizeError::ModelSave {
+                path: path.to_path_buf(),
+                reason: format!("Failed to write ONNX model: {e}"),
+            })?;
 
         Ok(())
     }
@@ -357,18 +402,24 @@ impl OnnxModel {
 // WeightTensor (unchanged from v0.2.0)
 // ===========================================================================
 
+/// An FP32 weight tensor extracted from an ONNX model.
 #[derive(Debug, Clone)]
 pub struct WeightTensor {
+    /// Initializer name in the ONNX graph.
     pub name: String,
+    /// FP32 weight values.
     pub data: Vec<f32>,
+    /// Tensor dimensions.
     pub shape: Vec<usize>,
 }
 
 impl WeightTensor {
+    /// Size of this tensor in bytes (as FP32).
     pub fn size_bytes(&self) -> usize {
         self.data.len() * std::mem::size_of::<f32>()
     }
 
+    /// Total number of scalar elements.
     pub fn num_elements(&self) -> usize {
         self.data.len()
     }

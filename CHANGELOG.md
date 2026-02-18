@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-02-18
+
+### Added
+
+- `QuantizeError` enum with 8 variants (`InvalidTensor`, `UnsupportedConfig`, `ModelLoad`, `ModelSave`, `GraphTransform`, `Calibration`, `Config`, `Other`) replacing `anyhow::Result` at all public API boundaries
+- `errors::Result<T>` type alias for `std::result::Result<T, QuantizeError>`
+- `pub mod errors` and `pub use errors::QuantizeError` in crate root
+- `///` doc comments on all public items (structs, enums, methods, functions, modules)
+- Crate-level `//!` documentation with module overview and feature flags
+- 6 integration tests in `tests/integration.rs` that construct ONNX models in memory (no model files needed)
+- `tempfile` dev-dependency for integration test I/O
+
+### Changed
+
+- **BREAKING:** All public library functions now return `crate::errors::Result<T>` instead of `anyhow::Result<T>`
+- **BREAKING:** `CalibrationMethod::from_str` error type changed from `anyhow::Error` to `QuantizeError`
+- CLI (`main.rs`) and Python bindings (`python.rs`) are unchanged in behavior -- `QuantizeError` auto-converts to `anyhow::Error` and `PyRuntimeError` respectively
+- `anyhow` remains in `Cargo.toml` for CLI binary use
+
+### Fixed
+
+- `rustdoc` warning for unescaped `[num_channels]` in `graph_builder.rs`
+- `rustdoc` warning for unescaped `Vec<i64>` in `onnx_utils/mod.rs`
+
 ## [0.4.0] - 2026-02-15
 
 ### Added

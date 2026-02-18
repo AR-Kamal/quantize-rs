@@ -10,7 +10,7 @@
 //!   Weight-based:     69.76% → 69.52% (0.24% drop)
 //!   Activation-based: 69.76% → 69.68% (0.08% drop)  ← 3× better
 
-use anyhow::{Context, Result};
+use crate::errors::{QuantizeError, Result};
 use std::collections::HashMap;
 use tract_onnx::prelude::*;
 
@@ -70,7 +70,7 @@ impl ActivationEstimator {
         // --- Load with tract ---
         let mut tract_model = tract_onnx::onnx()
             .model_for_path(onnx_path)
-            .with_context(|| format!("tract failed to load ONNX model: {}", onnx_path))?;
+            .map_err(|e| QuantizeError::Calibration { reason: format!("tract failed to load ONNX model '{}': {e}", onnx_path) })?;
 
 
 
@@ -107,7 +107,7 @@ impl ActivationEstimator {
         // --- Optimize and prepare for inference ---
         let optimized_model = tract_model
             .into_optimized()
-            .context("tract optimization failed")?;
+            .map_err(|e| QuantizeError::Calibration { reason: format!("tract optimization failed: {e}") })?;
 
         // Collect output names AFTER optimization, since optimization may
         // renumber/rename nodes. Use the optimized model's output outlets
@@ -120,7 +120,7 @@ impl ActivationEstimator {
 
         let tract_model = optimized_model
             .into_runnable()
-            .context("tract failed to create runnable plan")?;
+            .map_err(|e| QuantizeError::Calibration { reason: format!("tract failed to create runnable plan: {e}") })?;
 
         Ok(Self {
             model,
@@ -145,7 +145,7 @@ impl ActivationEstimator {
     /// Progress is printed every 10 batches.
     pub fn calibrate(&mut self, dataset: &CalibrationDataset) -> Result<()> {
         if dataset.is_empty() {
-            anyhow::bail!("Calibration dataset is empty");
+            return Err(QuantizeError::Calibration { reason: "Calibration dataset is empty".into() });
         }
 
         println!("Running activation-based calibration on {} samples...", dataset.len());
@@ -177,13 +177,13 @@ impl ActivationEstimator {
         let input_tensor = tract_core::prelude::Tensor::from_shape(
             &input_shape,
             sample,
-        ).context("Failed to create input tensor from calibration sample")?;
+        ).map_err(|e| QuantizeError::Calibration { reason: format!("Failed to create input tensor from calibration sample: {e}") })?;
 
         // --- Run inference ---
         let outputs = self
             .tract_model
             .run(tvec!(input_tensor.into()))
-            .context("tract inference failed on calibration sample")?;
+            .map_err(|e| QuantizeError::Calibration { reason: format!("tract inference failed on calibration sample: {e}") })?;
 
         // --- Update statistics for each output ---
         for (output_idx, tvalue) in outputs.iter().enumerate() {
@@ -272,11 +272,11 @@ fn extract_f32_data(tensor: &Tensor) -> Result<Vec<f32>> {
             // Not f32: try to cast
             let tensor_f32 = tensor
                 .cast_to::<f32>()
-                .context("Failed to cast tensor to f32 for activation statistics")?;
+                .map_err(|e| QuantizeError::Calibration { reason: format!("Failed to cast tensor to f32 for activation statistics: {e}") })?;
 
             let view = tensor_f32
                 .to_array_view::<f32>()
-                .context("Tensor cast succeeded but array view failed")?;
+                .map_err(|e| QuantizeError::Calibration { reason: format!("Tensor cast succeeded but array view failed: {e}") })?;
 
             Ok(view.iter().copied().collect())
         }

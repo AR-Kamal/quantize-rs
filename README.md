@@ -20,7 +20,8 @@ quantize-rs converts float32 ONNX models to INT8 or INT4 representation using po
 - **Graph connectivity validation** -- verifies that every node input resolves after quantization
 - **CLI** -- single-model quantization, batch processing, validation, benchmarking, config-file driven workflows
 - **Python bindings** -- via PyO3; install with `pip install quantization-rs`
-- **Rust library** -- usable as a crate dependency
+- **Typed error handling** -- `QuantizeError` enum at all public API boundaries (no more string-parsing `anyhow` errors)
+- **Rust library** -- usable as a crate dependency; all public items have doc comments
 
 ## Installation
 
@@ -49,7 +50,7 @@ cargo install quantize-rs
 
 ```toml
 [dependencies]
-quantize-rs = "0.4"
+quantize-rs = "0.5"
 ```
 
 ## Quick start
@@ -289,7 +290,7 @@ output = session.run(None, {input_name: x})
 ## Testing
 
 ```bash
-# Rust tests (57 unit tests)
+# Rust tests (57 unit + 6 integration tests)
 cargo test
 
 # With output

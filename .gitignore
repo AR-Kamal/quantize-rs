@@ -6,7 +6,6 @@ test-config.yaml
 /quantized_batch
 /quantized_perchannel
 /config_output
-/test_models
 /output
 !examples/*.yaml
 !examples/config.yaml
@@ -15,11 +14,15 @@ test-config.yaml
 *.swp
 *.swo
 *~
-/test_venv/
-/test_venv2/
 __pycache__/
 .pytest_cache/
 .venv/
 test_python_bindings.py
 test.py
 RELEASING.md
+ROADMAP.md
+map.txt
+ARCHITECTURE.md
+/test_venv/
+/test_venv2/
+/test_models

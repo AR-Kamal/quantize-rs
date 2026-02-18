@@ -5,7 +5,7 @@
 //!   2. **Connectivity validation** — walk the graph and verify every edge resolves
 //!   3. **Opset management** — ensure the model declares opset ≥ 13
 
-use anyhow::Result;
+use crate::errors::{QuantizeError, Result};
 use std::collections::{HashMap, HashSet};
 
 use super::quantization_nodes::{
@@ -192,7 +192,7 @@ pub fn ensure_opset_version(model: &mut onnx::onnx::ModelProto, min_version: i64
 /// but only channel-0's params survive to here.  Fixing this requires:
 ///   - Changing the signature to `Vec<f32>` scales + `Vec<i8>` zero_points
 ///   - Adding the `axis` attribute to the DequantizeLinear node
-///   - Making scale/zp tensors 1-D (shape = [num_channels])
+///   - Making scale/zp tensors 1-D (shape = \[num_channels\])
 pub fn apply_qdq_transform(
     graph: &mut onnx::onnx::GraphProto,
     inputs: &[QdqWeightInput],
@@ -255,19 +255,23 @@ pub fn apply_qdq_transform(
         let shape = shape_map
             .get(&inp.original_name)
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Weight '{}' not found in model initializers — \
-                     verify the name matches exactly",
-                    inp.original_name
-                )
+                QuantizeError::GraphTransform {
+                    reason: format!(
+                        "Weight '{}' not found in model initializers — \
+                         verify the name matches exactly",
+                        inp.original_name
+                    ),
+                }
             })?;
 
         let expected_len: i64 = shape.iter().product();
         if inp.quantized_values.len() as i64 != expected_len {
-            return Err(anyhow::anyhow!(
-                "Weight '{}': quantized_values has {} elements but shape {:?} expects {}",
-                inp.original_name, inp.quantized_values.len(), shape, expected_len
-            ));
+            return Err(QuantizeError::GraphTransform {
+                reason: format!(
+                    "Weight '{}': quantized_values has {} elements but shape {:?} expects {}",
+                    inp.original_name, inp.quantized_values.len(), shape, expected_len
+                ),
+            });
         }
 
         let names = DequantLinearNames::from_original(&inp.original_name);

@@ -1,5 +1,11 @@
-// src/calibration/mod.rs
-use anyhow::{Context, Result, bail};
+//! Calibration datasets and activation-based range estimation.
+//!
+//! - [`CalibrationDataset`] — load or generate calibration samples
+//! - [`methods::CalibrationMethod`] — range optimization strategies
+//! - [`stats::ActivationStats`] — incremental min/max/histogram tracker
+//! - [`inference::ActivationEstimator`] — run inference to collect activation stats
+
+use crate::errors::{QuantizeError, Result};
 use ndarray::{Array, IxDyn};
 use std::path::Path;
 
@@ -9,10 +15,13 @@ pub mod inference;
 
 pub use inference::ActivationEstimator;
 
+/// A collection of FP32 calibration samples used for range estimation.
 #[derive(Clone)]
 pub struct CalibrationDataset {
+    /// Individual samples, each flattened to match `shape`.
     pub samples: Vec<Vec<f32>>,
 
+    /// Shape of a single sample (excluding batch dimension).
     pub shape: Vec<usize>,
 }
 
@@ -26,28 +35,36 @@ impl std::fmt::Debug for CalibrationDataset {
 }
 
 impl CalibrationDataset {
+    /// Load calibration samples from a NumPy `.npy` file.
+    ///
+    /// The array must be at least 2-dimensional `[batch, ...]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuantizeError::Calibration`] if the file is missing, not `.npy`,
+    /// or has an invalid shape.
     pub fn from_numpy(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
         if !path.exists() {
-            bail!("File not found: {}", path.display());
+            return Err(QuantizeError::Calibration { reason: format!("File not found: {}", path.display()) });
         }
-        
+
         let array: Array<f32, IxDyn> = if path.extension().and_then(|s| s.to_str()) == Some("npy") {
             ndarray_npy::read_npy(path)
-                .with_context(|| format!("Failed to read NPY file: {}", path.display()))?
+                .map_err(|e| QuantizeError::Calibration { reason: format!("Failed to read NPY file '{}': {e}", path.display()) })?
         } else {
-            bail!("Only .npy files supported currently");
+            return Err(QuantizeError::Calibration { reason: "Only .npy files supported currently".into() });
         };
-        
+
         let shape: Vec<usize> = array.shape().to_vec();
 
         if shape.is_empty() {
-            bail!("Invalid array shape");
+            return Err(QuantizeError::Calibration { reason: "Invalid array shape".into() });
         }
 
         if shape.len() < 2 {
-            bail!("Calibration data must be at least 2-dimensional (batch, ...). Got shape {:?}", shape);
+            return Err(QuantizeError::Calibration { reason: format!("Calibration data must be at least 2-dimensional (batch, ...). Got shape {:?}", shape) });
         }
         
         let num_samples = shape[0];
@@ -68,15 +85,21 @@ impl CalibrationDataset {
         })
     }
     
+    /// Generate random calibration samples uniformly distributed in `range`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuantizeError::Calibration`] if shape is empty, `num_samples` is 0,
+    /// or the range is invalid.
     pub fn random(shape: Vec<usize>, num_samples: usize, range: (f32, f32)) -> Result<Self> {
         if shape.is_empty() || shape.contains(&0) {
-            bail!("Invalid shape: {:?} - all dimensions must be > 0", shape);
+            return Err(QuantizeError::Calibration { reason: format!("Invalid shape: {:?} - all dimensions must be > 0", shape) });
         }
         if num_samples == 0 {
-            bail!("num_samples must be > 0");
+            return Err(QuantizeError::Calibration { reason: "num_samples must be > 0".into() });
         }
         if range.0 >= range.1 {
-            bail!("Invalid range: ({}, {}) - min must be less than max", range.0, range.1);
+            return Err(QuantizeError::Calibration { reason: format!("Invalid range: ({}, {}) - min must be less than max", range.0, range.1) });
         }
         use rand::Rng;
         let mut rng = rand::thread_rng();
@@ -97,21 +120,29 @@ impl CalibrationDataset {
         })
     }
     
+    /// Create a dataset from pre-existing sample vectors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuantizeError::Calibration`] if `samples` is empty or any
+    /// sample has the wrong length for the given `shape`.
     pub fn from_samples(samples: Vec<Vec<f32>>, shape: Vec<usize>) -> Result<Self> {
         let num_samples = samples.len();
-        
+
         if num_samples == 0 {
-            bail!("No samples provided");
+            return Err(QuantizeError::Calibration { reason: "No samples provided".into() });
         }
-        
+
         let expected_size: usize = shape.iter().product();
-        
+
         for (i, sample) in samples.iter().enumerate() {
             if sample.len() != expected_size {
-                bail!(
-                    "Sample {} has size {} but expected {} (shape: {:?})",
-                    i, sample.len(), expected_size, shape
-                );
+                return Err(QuantizeError::Calibration {
+                    reason: format!(
+                        "Sample {} has size {} but expected {} (shape: {:?})",
+                        i, sample.len(), expected_size, shape
+                    ),
+                });
             }
         }
         
@@ -121,14 +152,17 @@ impl CalibrationDataset {
         })
     }
     
+    /// Shape of a single sample (excluding batch dimension).
     pub fn sample_shape(&self) -> &[usize] {
         &self.shape
     }
-    
+
+    /// Number of samples in the dataset.
     pub fn len(&self) -> usize {
         self.samples.len()
     }
 
+    /// Whether the dataset contains no samples.
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
     }
