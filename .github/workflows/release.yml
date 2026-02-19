@@ -14,9 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test
       - run: cargo publish
@@ -40,23 +37,11 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
-      - uses: arduino/setup-protoc@v3
+      - uses: PyO3/maturin-action@v1
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install maturin
-      - name: Build wheel
-        run: >
-          maturin build
-          --release
-          --features python
-          --target ${{ matrix.target }}
-          ${{ matrix.manylinux && format('--compatibility {0}', matrix.manylinux) || '' }}
+          target: ${{ matrix.target }}
+          args: --release --features python
+          manylinux: ${{ matrix.manylinux || 'auto' }}
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.target }}
@@ -67,11 +52,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: PyO3/maturin-action@v1
         with:
-          python-version: '3.12'
-      - run: pip install maturin
-      - run: maturin sdist
+          command: sdist
       - uses: actions/upload-artifact@v4
         with:
           name: sdist
