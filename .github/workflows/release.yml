@@ -77,6 +77,7 @@ jobs:
   # ── 5. Create GitHub release ──
   github-release:
     needs: [publish-crate, publish-pypi]
+    if: always() && needs.publish-pypi.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
