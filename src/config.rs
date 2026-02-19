@@ -21,6 +21,15 @@ pub struct Config {
     #[serde(default)]
     pub per_channel: bool,
 
+    /// Layer names to exclude from quantization globally.
+    #[serde(default)]
+    pub excluded_layers: Vec<String>,
+
+    /// Minimum number of elements a tensor must have to be quantized.
+    /// Tensors smaller than this are kept in FP32. Defaults to 0 (no minimum).
+    #[serde(default)]
+    pub min_elements: usize,
+
     /// Per-model configuration overrides.
     #[serde(default)]
     pub models: Vec<ModelConfig>,
@@ -50,6 +59,20 @@ pub struct ModelConfig {
     /// Skip this model if the output file already exists.
     #[serde(default)]
     pub skip_existing: bool,
+
+    /// Layer names to exclude from quantization for this model.
+    /// Merged with (but does not replace) the global `excluded_layers`.
+    #[serde(default)]
+    pub excluded_layers: Vec<String>,
+
+    /// Per-layer bit-width overrides for this model.
+    /// Key = initializer name, value = 4 or 8.
+    #[serde(default)]
+    pub layer_bits: std::collections::HashMap<String, u8>,
+
+    /// Override the global `min_elements` threshold for this model.
+    #[serde(default)]
+    pub min_elements: Option<usize>,
 }
 
 /// Batch processing configuration for quantizing multiple models.
@@ -130,6 +153,11 @@ impl Config {
                     return Err(QuantizeError::Config { reason: format!("Model {}: invalid bits value: {}", idx, bits) });
                 }
             }
+            for (layer, &bits) in &model.layer_bits {
+                if bits != 4 && bits != 8 {
+                    return Err(QuantizeError::Config { reason: format!("Model {}: invalid bits {} for layer '{}'", idx, bits, layer) });
+                }
+            }
         }
 
         if let Some(batch) = &self.batch {
@@ -152,6 +180,30 @@ impl Config {
     /// Effective per-channel setting for a model (model override or global default).
     pub fn get_per_channel(&self, model: &ModelConfig) -> bool {
         model.per_channel.unwrap_or(self.per_channel)
+    }
+
+    /// Effective excluded-layers list: global list merged with model-level list.
+    pub fn get_excluded_layers(&self, model: &ModelConfig) -> Vec<String> {
+        let mut layers = self.excluded_layers.clone();
+        for l in &model.excluded_layers {
+            if !layers.contains(l) {
+                layers.push(l.clone());
+            }
+        }
+        layers
+    }
+
+    /// Effective min-elements threshold for a model.
+    pub fn get_min_elements(&self, model: &ModelConfig) -> usize {
+        model.min_elements.unwrap_or(self.min_elements)
+    }
+
+    /// Effective per-layer bit-width overrides for a model.
+    ///
+    /// Layer names are model-specific so there is no global map to merge;
+    /// this simply returns the model's own `layer_bits` map.
+    pub fn get_layer_bits(&self, model: &ModelConfig) -> std::collections::HashMap<String, u8> {
+        model.layer_bits.clone()
     }
 }
 

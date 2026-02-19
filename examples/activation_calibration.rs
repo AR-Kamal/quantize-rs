@@ -70,11 +70,11 @@ fn main() -> Result<()> {
         let input_shape = if let Some(shape) = custom_shape {
             println!("  Using custom shape: {:?}", shape);
             shape
-        } else if info.inputs.len() > 0 {
+        } else if !info.inputs.is_empty() {
             // Parse shape from input info string (e.g., "input: float32[1,1,28,28]")
             let input_str = &info.inputs[0];
             if let Some(shape_part) = input_str.split('[').nth(1) {
-                if let Some(shape_str) = shape_part.split(']').nth(0) {
+                if let Some(shape_str) = shape_part.split(']').next() {
                     let dims: Vec<usize> = shape_str
                         .split(',')
                         .filter_map(|s| s.trim().parse().ok())
@@ -127,6 +127,7 @@ fn main() -> Result<()> {
         bits,
         per_channel,
         calibration_method: Some(quantize_rs::calibration::methods::CalibrationMethod::MinMax),
+        ..Default::default()
     };
 
     let quantizer = Quantizer::with_calibration(config, activation_stats);

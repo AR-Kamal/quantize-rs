@@ -1,28 +1,57 @@
+# Build output
 /target
-*.onnx 
+
+# Cargo lock (omitted for libraries; apps should keep it)
 Cargo.lock
+
+# ONNX model files — large binaries, never commit
+*.onnx
 examples/*.onnx
+
+# Generated / downloaded model directories
+/test_models/
+/eval/models/
+
+# Python virtual environments
+.venv/
+/test_venv/
+/test_venv2/
+venv/
+env/
+
+# Python cache
+/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Scratch / temp files
+map.txt
 test-config.yaml
-/quantized_batch
-/quantized_perchannel
-/config_output
-/output
-!examples/*.yaml
-!examples/config.yaml
+test_python_bindings.py
+test.py
+.pypirc
+
+# Quantize-rs output directories
+/quantized_batch/
+/quantized_perchannel/
+/config_output/
+/output/
+
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-__pycache__/
-.pytest_cache/
-.venv/
-test_python_bindings.py
-test.py
+
+# Claude Code local config
+/.claude
+
+# Keep example YAML configs
+!examples/*.yaml
+!examples/config.yaml
+
+
+ARCHITECTURE.md
 RELEASING.md
 ROADMAP.md
-map.txt
-ARCHITECTURE.md
-/test_venv/
-/test_venv2/
-/test_models

@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-02-19
+
+### Added
+
+- **Dependency modernization**: Replaced the unmaintained `onnx = "0.1.0"` crate (which depended on `protobuf` v1.7) with a prost-based protobuf pipeline. The ONNX schema is now vendored as `proto/onnx.proto3`; `build.rs` compiles it at build time using `protox` (pure-Rust protoc replacement) + `prost-build`. No system `protoc` binary required — CI no longer needs to install it.
+- **Per-layer exclusion**: `QuantConfig.excluded_layers: Vec<String>` — layer names listed here are left in FP32 and skipped during quantization.
+- **Per-layer bit-width overrides**: `QuantConfig.layer_bits: HashMap<String, u8>` — individual layers can be quantized to a different bit width than the global default.
+- **Minimum-elements threshold**: `QuantConfig.min_elements: usize` — tensors with fewer elements than this value (e.g., biases) are kept in FP32.
+- `QuantConfig::should_quantize(name, num_elements) -> bool` helper encapsulating both the exclude-list and min-elements checks.
+- `QuantConfig::bits_for_layer(name) -> u8` helper returning the per-layer or global bit width.
+- CLI `quantize` subcommand gains two new flags:
+  - `--exclude <LAYER>` (repeatable) — exclude a layer by name
+  - `--min-elements <N>` — skip tensors with fewer than N elements
+- `Config.excluded_layers` and `Config.min_elements` global fields in YAML/TOML config files.
+- `ModelConfig.excluded_layers`, `ModelConfig.layer_bits`, `ModelConfig.min_elements` per-model overrides in config files.
+- `Config::get_excluded_layers()` and `Config::get_min_elements()` helpers (model overrides merged with global).
+- 6 new unit tests for `should_quantize` and `bits_for_layer` in `quantization/mod.rs`.
+- **Property-based tests** (`tests/property_tests.rs`, 15 tests using `proptest`):
+  - `quantize(dequantize(v)) ≈ v` for exact grid points (INT8 and INT4)
+  - `|dequantize(quantize(v)) - v| ≤ scale/2` for all values in range
+  - `pack(unpack(data)) == data` for all valid INT4 data
+  - Quantization never panics on any finite f32 input
+  - Per-channel quantization error bounds
+- **Criterion benchmarks** (`benches/quantization.rs`, 4 groups):
+  - `quantize_throughput` — INT8/INT4 at 1K/100K/1M elements with `Throughput::Elements`
+  - `per_channel_vs_per_tensor` — comparison across 4 variants on a [64,27] tensor
+  - `pack_int4` — raw pack/unpack throughput at 10K/100K/1M elements
+  - `quantize_model` — full Quantizer loop over 8 synthetic weight tensors
+- **`validate_real_model` example** (`examples/validate_real_model.rs`): loads any ONNX file, quantizes weights, reports per-tensor MAE and compression, and optionally saves + validates the quantized model. Accepts `--bits`, `--per-channel`, `--min-elements`, `--output`.
+- **GPT-2 evaluation script** (`eval/benchmark_gpt2.py`): end-to-end benchmark comparing FP32 vs INT8 GPT-2 small. Three-step workflow: `--export` (HuggingFace → ONNX), `--quantize` (calls `validate_real_model` binary), `--benchmark` (perplexity + text generation). Validated results: −74.8% file size, +1.78% perplexity on WikiText-2 (negligible quality loss).
+- Additional multilayer integration tests in `tests/integration.rs`: `test_multilayer_min_elements`, `test_multilayer_excluded_layers`, `test_multilayer_full_round_trip`, `test_multilayer_compression_ratio`.
+
+### Changed
+
+- `QuantConfig` now derives `Default`; existing struct-literal instantiations require `..Default::default()` for the new fields.
+- `commands::quantize()` signature extended: `excluded_layers: &[String]`, `min_elements: usize`.
+- Quantization loop in `commands::quantize()` filters weights with `config.should_quantize()` before parallelizing and applies per-layer bits via `config.bits_for_layer()`.
+- CLI quantize output now prints `Quantized: N/M tensors` when layers are skipped.
+- Total test count: 90 passing (63 unit + 12 integration + 15 property-based), 7 ignored (require model files on disk).
+
+### Removed
+
+- `onnx = "0.1.0"` and `protobuf = "1.7"` from `[dependencies]` — replaced by the prost pipeline above.
+
 ## [0.5.0] - 2026-02-18
 
 ### Added

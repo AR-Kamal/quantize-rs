@@ -6,9 +6,13 @@ pub mod graph_builder;
 pub mod quantization_nodes;
 
 use crate::errors::{QuantizeError, Result};
-use protobuf::Message;
+use crate::onnx_proto::{
+    ModelProto, StringStringEntryProto,
+    tensor_proto, tensor_shape_proto, type_proto,
+};
+use prost::Message;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 
 // Re-export so callers don't have to reach into submodules
 pub use graph_builder::ConnectivityReport;
@@ -22,15 +26,16 @@ pub use graph_builder::ConnectivityReport;
 /// Provides methods for inspecting, extracting weights, saving quantized
 /// models, and validating graph connectivity.
 pub struct OnnxModel {
-    proto: onnx::onnx::ModelProto,
+    proto: ModelProto,
 }
 
 impl std::fmt::Debug for OnnxModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let graph = self.proto.get_graph();
+        let name = self.proto.graph.as_ref().map(|g| g.name.as_str()).unwrap_or("");
+        let num_nodes = self.proto.graph.as_ref().map(|g| g.node.len()).unwrap_or(0);
         f.debug_struct("OnnxModel")
-            .field("name", &graph.get_name())
-            .field("num_nodes", &graph.get_node().len())
+            .field("name", &name)
+            .field("num_nodes", &num_nodes)
             .finish()
     }
 }
@@ -101,16 +106,14 @@ impl OnnxModel {
             });
         }
 
-        let mut buffer = Vec::new();
+        let mut buffer = Vec::with_capacity(file_size as usize);
         file.read_to_end(&mut buffer)
             .map_err(|e| QuantizeError::ModelLoad {
                 path: path.to_path_buf(),
                 reason: format!("Failed to read ONNX file: {e}"),
             })?;
 
-        let mut proto = onnx::onnx::ModelProto::new();
-        proto
-            .merge_from_bytes(&buffer)
+        let proto = ModelProto::decode(&buffer[..])
             .map_err(|e| QuantizeError::ModelLoad {
                 path: path.to_path_buf(),
                 reason: format!("Failed to parse ONNX protobuf: {e}"),
@@ -121,24 +124,20 @@ impl OnnxModel {
 
     /// Return a summary of the model's structure.
     pub fn info(&self) -> ModelInfo {
-        let graph = self.proto.get_graph();
+        let graph = self.proto.graph.as_ref();
 
         let inputs: Vec<String> = graph
-            .get_input()
-            .iter()
-            .map(|i| i.get_name().to_string())
-            .collect();
+            .map(|g| g.input.iter().map(|i| i.name.clone()).collect())
+            .unwrap_or_default();
 
         let outputs: Vec<String> = graph
-            .get_output()
-            .iter()
-            .map(|o| o.get_name().to_string())
-            .collect();
+            .map(|g| g.output.iter().map(|o| o.name.clone()).collect())
+            .unwrap_or_default();
 
         ModelInfo {
-            name: graph.get_name().to_string(),
-            version: self.proto.get_model_version(),
-            num_nodes: graph.get_node().len(),
+            name: graph.map(|g| g.name.clone()).unwrap_or_default(),
+            version: self.proto.model_version,
+            num_nodes: graph.map(|g| g.node.len()).unwrap_or(0),
             inputs,
             outputs,
         }
@@ -150,19 +149,21 @@ impl OnnxModel {
     /// (symbolic or missing) are returned as -1.  Returns one entry per
     /// `graph.input` that has tensor type information.
     pub fn input_shapes(&self) -> Vec<Vec<i64>> {
-        let graph = self.proto.get_graph();
-        let mut shapes = Vec::new();
+        let graph = match &self.proto.graph {
+            Some(g) => g,
+            None => return Vec::new(),
+        };
 
-        for inp in graph.get_input().iter() {
-            if inp.has_field_type() {
-                let type_proto = inp.get_field_type();
-                if type_proto.has_tensor_type() {
-                    let tensor_type = type_proto.get_tensor_type();
-                    if tensor_type.has_shape() {
-                        let shape_proto = tensor_type.get_shape();
-                        let dims: Vec<i64> = shape_proto.get_dim().iter().map(|d| {
-                            let v = d.get_dim_value();
-                            if v > 0 { v } else { -1 }
+        let mut shapes = Vec::new();
+        for inp in &graph.input {
+            if let Some(type_proto) = &inp.r#type {
+                if let Some(type_proto::Value::TensorType(tensor_type)) = &type_proto.value {
+                    if let Some(shape) = &tensor_type.shape {
+                        let dims: Vec<i64> = shape.dim.iter().map(|d| {
+                            match &d.value {
+                                Some(tensor_shape_proto::dimension::Value::DimValue(v)) => *v,
+                                _ => -1,
+                            }
                         }).collect();
                         shapes.push(dims);
                     }
@@ -174,23 +175,30 @@ impl OnnxModel {
 
     /// Extract all FP32 weight tensors from the model's initializers.
     pub fn extract_weights(&self) -> Vec<WeightTensor> {
+        let graph = match &self.proto.graph {
+            Some(g) => g,
+            None => return Vec::new(),
+        };
+
         let mut weights = Vec::new();
-        let graph = self.proto.get_graph();
+        for initializer in &graph.initializer {
+            // Only extract FP32 tensors — skip INT8, INT64, DOUBLE, etc.
+            if initializer.data_type != tensor_proto::DataType::Float as i32 {
+                continue;
+            }
 
-        for initializer in graph.get_initializer() {
-            let name = initializer.get_name().to_string();
+            let name = initializer.name.clone();
 
-            let shape: Vec<usize> = initializer.get_dims().iter()
+            let shape: Vec<usize> = initializer.dims.iter()
                 .map(|&d| d.max(0) as usize)
                 .collect();
 
-            let data = if initializer.has_raw_data() {
-                let raw = initializer.get_raw_data();
-                raw.chunks_exact(4)
+            let data = if !initializer.raw_data.is_empty() {
+                initializer.raw_data.chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect()
             } else {
-                initializer.get_float_data().to_vec()
+                initializer.float_data.clone()
             };
 
             if !data.is_empty() {
@@ -206,13 +214,16 @@ impl OnnxModel {
     /// Prefer computing this from already-extracted weights when available:
     /// `weights.iter().map(|w| w.size_bytes()).sum()` avoids reparsing.
     pub fn total_size_bytes(&self) -> usize {
-        let graph = self.proto.get_graph();
-        graph.get_initializer().iter()
+        let graph = match &self.proto.graph {
+            Some(g) => g,
+            None => return 0,
+        };
+        graph.initializer.iter()
             .map(|init| {
-                if init.has_raw_data() {
-                    init.get_raw_data().len()
+                if !init.raw_data.is_empty() {
+                    init.raw_data.len()
                 } else {
-                    std::mem::size_of_val(init.get_float_data())
+                    init.float_data.len() * std::mem::size_of::<f32>()
                 }
             })
             .sum()
@@ -259,24 +270,34 @@ impl OnnxModel {
 
         // --- 2. Persist per-weight bits in model metadata ---
         for inp in quantized_data.iter() {
-            let mut prop = onnx::onnx::StringStringEntryProto::new();
-            prop.set_key(format!("quantize_rs.bits.{}", inp.original_name));
-            prop.set_value(inp.bits.to_string());
-            self.proto.mut_metadata_props().push(prop);
+            self.proto.metadata_props.push(StringStringEntryProto {
+                key:   format!("quantize_rs.bits.{}", inp.original_name),
+                value: inp.bits.to_string(),
+            });
         }
 
         // --- 3. Apply QDQ transform to the graph ---
-        apply_qdq_transform(self.proto.mut_graph(), quantized_data)?;
+        let graph = self.proto.graph.as_mut().ok_or_else(|| QuantizeError::ModelSave {
+            path: path.to_path_buf(),
+            reason: "Model has no graph".to_string(),
+        })?;
+        apply_qdq_transform(graph, quantized_data)?;
 
-        // --- 5. Write to disk ---
+        // --- 4. Encode and write to disk ---
+        let mut buf = Vec::new();
+        self.proto.encode(&mut buf)
+            .map_err(|e| QuantizeError::ModelSave {
+                path: path.to_path_buf(),
+                reason: format!("Failed to encode ONNX model: {e}"),
+            })?;
+
         let mut file = std::fs::File::create(path)
             .map_err(|e| QuantizeError::ModelSave {
                 path: path.to_path_buf(),
                 reason: format!("Failed to create output file: {e}"),
             })?;
 
-        self.proto
-            .write_to_writer(&mut file)
+        file.write_all(&buf)
             .map_err(|e| QuantizeError::ModelSave {
                 path: path.to_path_buf(),
                 reason: format!("Failed to write ONNX model: {e}"),
@@ -303,7 +324,13 @@ impl OnnxModel {
     /// went undetected.  Integrate `report.summary()` into the CLI validate
     /// output alongside the existing structure / weight checks.
     pub fn validate_connectivity(&self) -> ConnectivityReport {
-        graph_builder::validate_graph_connectivity(self.proto.get_graph())
+        match &self.proto.graph {
+            Some(graph) => graph_builder::validate_graph_connectivity(graph),
+            None => {
+                use crate::onnx_proto::GraphProto;
+                graph_builder::validate_graph_connectivity(&GraphProto::default())
+            }
+        }
     }
 }
 
@@ -321,7 +348,10 @@ impl OnnxModel {
     /// Bit-width comes from `metadata_props` (written by `save_quantized`);
     /// defaults to 8 if the metadata entry is missing.
     pub fn load_quantized_info(&self) -> Vec<QuantizedWeightInfo> {
-        let graph = self.proto.get_graph();
+        let graph = match &self.proto.graph {
+            Some(g) => g,
+            None => return Vec::new(),
+        };
 
         let mut scale_map: std::collections::HashMap<String, f32> =
             std::collections::HashMap::new();
@@ -329,27 +359,27 @@ impl OnnxModel {
             std::collections::HashMap::new();
         let mut quant_bases: Vec<String> = Vec::new();
 
-        for init in graph.get_initializer().iter() {
-            let name = init.get_name();
+        for init in &graph.initializer {
+            let name = &init.name;
 
             if let Some(base) = name.strip_suffix("_scale") {
                 // Scale is stored in float_data (rank-0 scalar)
-                let scale = if !init.get_float_data().is_empty() {
-                    init.get_float_data()[0]
-                } else {
+                let scale = if !init.float_data.is_empty() {
+                    init.float_data[0]
+                } else if init.raw_data.len() >= 4 {
                     // Fallback: try raw_data as little-endian f32
-                    let raw = init.get_raw_data();
-                    if raw.len() >= 4 {
-                        f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])
-                    } else {
-                        1.0
-                    }
+                    f32::from_le_bytes([
+                        init.raw_data[0], init.raw_data[1],
+                        init.raw_data[2], init.raw_data[3],
+                    ])
+                } else {
+                    1.0
                 };
                 scale_map.insert(base.to_string(), scale);
             } else if let Some(base) = name.strip_suffix("_zp") {
                 // Zero-point is a single raw byte
-                let zp = if !init.get_raw_data().is_empty() {
-                    init.get_raw_data()[0] as i8
+                let zp = if !init.raw_data.is_empty() {
+                    init.raw_data[0] as i8
                 } else {
                     0
                 };
@@ -362,9 +392,9 @@ impl OnnxModel {
         // Read bits from metadata_props (written by save_quantized)
         let mut bits_map: std::collections::HashMap<String, u8> =
             std::collections::HashMap::new();
-        for prop in self.proto.get_metadata_props().iter() {
-            if let Some(base) = prop.get_key().strip_prefix("quantize_rs.bits.") {
-                if let Ok(bits) = prop.get_value().parse::<u8>() {
+        for prop in &self.proto.metadata_props {
+            if let Some(base) = prop.key.strip_prefix("quantize_rs.bits.") {
+                if let Ok(bits) = prop.value.parse::<u8>() {
                     bits_map.insert(base.to_string(), bits);
                 }
             }
@@ -379,11 +409,9 @@ impl OnnxModel {
                 let bits = bits_map.get(base).copied().unwrap_or(8);
 
                 // Element count = product of dims on the _quantized tensor
-                let original_length = graph
-                    .get_initializer()
-                    .iter()
-                    .find(|i| i.get_name() == format!("{}_quantized", base))
-                    .map(|i| i.get_dims().iter().product::<i64>() as usize)
+                let original_length = graph.initializer.iter()
+                    .find(|i| i.name == format!("{}_quantized", base))
+                    .map(|i| i.dims.iter().product::<i64>() as usize)
                     .unwrap_or(0);
 
                 QuantizedWeightInfo {

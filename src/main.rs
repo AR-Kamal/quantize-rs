@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::*;
+use std::collections::HashMap;
 
 mod cli;
 
@@ -13,6 +14,30 @@ fn parse_bits(s: &str) -> Result<u8, String> {
     } else {
         Err(format!("bits must be 4 or 8, got {}", bits))
     }
+}
+
+/// Validate calibration method at parse time.
+#[cfg(feature = "calibration")]
+fn parse_calibration_method(s: &str) -> Result<String, String> {
+    match s.to_lowercase().as_str() {
+        "minmax" | "percentile" | "entropy" | "mse" => Ok(s.to_string()),
+        _ => Err(format!("unknown method '{}'; valid: minmax, percentile, entropy, mse", s)),
+    }
+}
+
+/// Parse a single `NAME=BITS` layer-bits override (e.g. `conv1.weight=4`).
+fn parse_layer_bits(s: &str) -> Result<(String, u8), String> {
+    let (name, bits_str) = s.split_once('=')
+        .ok_or_else(|| format!("expected NAME=BITS (e.g. conv1.weight=4), got '{}'", s))?;
+    if name.is_empty() {
+        return Err("layer name must not be empty".into());
+    }
+    let bits: u8 = bits_str.parse()
+        .map_err(|_| format!("'{}' is not a valid bit width", bits_str))?;
+    if bits != 4 && bits != 8 {
+        return Err(format!("bits must be 4 or 8, got {}", bits));
+    }
+    Ok((name.to_string(), bits))
 }
 
 #[derive(Parser)]
@@ -41,6 +66,19 @@ enum Commands {
 
         #[arg(long)]
         per_channel: bool,
+
+        /// Layer names to exclude from quantization (may be specified multiple times).
+        #[arg(long = "exclude", value_name = "LAYER")]
+        excluded_layers: Vec<String>,
+
+        /// Skip tensors with fewer than this many elements (leave them in FP32).
+        #[arg(long, default_value = "0")]
+        min_elements: usize,
+
+        /// Per-layer bit-width override (may be specified multiple times).
+        /// Format: LAYER=BITS, e.g. --layer-bits conv1.weight=4
+        #[arg(long = "layer-bits", value_name = "LAYER=BITS", value_parser = parse_layer_bits)]
+        layer_bits: Vec<(String, u8)>,
     },
 
     Batch {
@@ -61,6 +99,19 @@ enum Commands {
 
         #[arg(long)]
         continue_on_error: bool,
+
+        /// Layer names to exclude from quantization (may be specified multiple times).
+        #[arg(long = "exclude", value_name = "LAYER")]
+        excluded_layers: Vec<String>,
+
+        /// Skip tensors with fewer than this many elements (leave them in FP32).
+        #[arg(long, default_value = "0")]
+        min_elements: usize,
+
+        /// Per-layer bit-width override (may be specified multiple times).
+        /// Format: LAYER=BITS, e.g. --layer-bits conv1.weight=4
+        #[arg(long = "layer-bits", value_name = "LAYER=BITS", value_parser = parse_layer_bits)]
+        layer_bits: Vec<(String, u8)>,
     },
 
     Validate {
@@ -95,6 +146,7 @@ enum Commands {
         dry_run: bool,
     },
 
+    #[cfg(feature = "calibration")]
     Calibrate {
         #[arg(value_name = "MODEL")]
         input: String,
@@ -111,7 +163,7 @@ enum Commands {
         #[arg(long)]
         per_channel: bool,
 
-        #[arg(long, default_value = "percentile")]
+        #[arg(long, default_value = "percentile", value_parser = parse_calibration_method)]
         method: String,
     },
 
@@ -129,8 +181,12 @@ fn main() -> Result<()> {
             output,
             bits,
             per_channel,
+            excluded_layers,
+            min_elements,
+            layer_bits,
         } => {
-            commands::quantize(&input, &output, bits, per_channel)?;
+            let layer_bits_map: HashMap<String, u8> = layer_bits.into_iter().collect();
+            commands::quantize(&input, &output, bits, per_channel, &excluded_layers, min_elements, &layer_bits_map)?;
         }
         Commands::Batch {
             inputs,
@@ -139,8 +195,12 @@ fn main() -> Result<()> {
             per_channel,
             skip_existing,
             continue_on_error,
+            excluded_layers,
+            min_elements,
+            layer_bits,
         } => {
-            commands::batch(&inputs, &output, bits, per_channel, skip_existing, continue_on_error)?;
+            let layer_bits_map: HashMap<String, u8> = layer_bits.into_iter().collect();
+            commands::batch(&inputs, &output, bits, per_channel, skip_existing, continue_on_error, &excluded_layers, min_elements, &layer_bits_map)?;
         }
         Commands::Validate {
             original,
@@ -162,6 +222,7 @@ fn main() -> Result<()> {
             commands::run_config(&config_file, dry_run)?;
         }
 
+        #[cfg(feature = "calibration")]
         Commands::Calibrate {
             input,
             data,

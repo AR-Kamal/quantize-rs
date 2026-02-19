@@ -1,6 +1,6 @@
 [package]
 name = "quantize-rs"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["Abdul Rahman Kamal <abdulrahmandev141@gmail.com>"]
 description = "Neural network quantization toolkit for ONNX models"
@@ -14,19 +14,12 @@ categories = ["command-line-utilities", "science", "compression"]
 exclude = ["*.onnx", "examples/*.onnx"]
 
 [dependencies]
-tract-onnx = "0.21"
-tract-core = "0.21"
 glob = "0.3"
 rand = "0.8"
 rayon = "1.8"
 
-# ONNX model parsing
-onnx = "0.1.0"
-protobuf = "1.7"
-
-# Tensor operations
-ndarray = "0.15"
-ndarray-npy = "0.8"
+# ONNX model parsing — prost-generated from proto/onnx.proto3
+prost = "0.13"
 
 # CLI interface
 clap = { version = "4.4", features = ["derive"] }
@@ -42,13 +35,26 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 toml = "0.8"
 
+# Calibration — optional heavy deps (tract inference engine, ndarray for .npy)
+tract-onnx = { version = "0.21", optional = true }
+tract-core = { version = "0.21", optional = true }
+ndarray = { version = "0.15", optional = true }
+ndarray-npy = { version = "0.8", optional = true }
+
 [features]
+default = ["calibration"]
+calibration = ["tract-onnx", "tract-core", "ndarray", "ndarray-npy"]
 python = ["pyo3"]
+
+[build-dependencies]
+prost-build = "0.13"
+protox = "0.7"
 
 [dev-dependencies]
 approx = "0.5"
 criterion = "0.5"
 tempfile = "3"
+proptest = "1"
 
 # Maturin looks for this section when building Python wheels
 [package.metadata.maturin]
@@ -80,3 +86,11 @@ path = "examples/batch_quantize.rs"
 [[example]]
 name = "activation_calibration"
 path = "examples/activation_calibration.rs"
+
+[[example]]
+name = "validate_real_model"
+path = "examples/validate_real_model.rs"
+
+[[bench]]
+name = "quantization"
+harness = false

@@ -9,15 +9,17 @@
 //!
 //! - [`quantization`] -- core quantization logic (INT8/INT4, per-channel, packing)
 //! - [`onnx_utils`] -- ONNX model loading, weight extraction, QDQ save, validation
-//! - [`calibration`] -- calibration datasets, activation-based inference, range methods
+//! - [`calibration`] -- (feature `calibration`) calibration datasets, activation-based inference, range methods
 //! - [`config`] -- YAML/TOML configuration file support
 //! - [`errors`] -- typed error enum ([`QuantizeError`]) for all public API functions
 //!
 //! # Feature flags
 //!
+//! - **`calibration`** *(default)* -- enables activation-based calibration (adds `tract-onnx`, `ndarray`)
 //! - **`python`** -- enables PyO3 bindings (`quantize_rs` Python module)
 
 pub mod errors;
+pub mod onnx_proto;
 pub mod onnx_utils;
 pub mod quantization;
 pub mod config;
@@ -28,7 +30,9 @@ pub use onnx_utils::{ModelInfo, OnnxModel, WeightTensor, QuantizedWeightInfo, Co
 pub use onnx_utils::graph_builder::QdqWeightInput;
 pub use quantization::{Quantizer, QuantConfig, QuantParams, pack_int4, unpack_int4};
 pub use config::Config;
-pub use calibration::{CalibrationDataset, stats::ActivationStats, inference::ActivationEstimator};
+pub use calibration::{CalibrationDataset, stats::ActivationStats};
+#[cfg(feature = "calibration")]
+pub use calibration::inference::ActivationEstimator;
 
 /// Library version string, read from `Cargo.toml` at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

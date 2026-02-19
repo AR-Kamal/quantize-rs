@@ -8,9 +8,18 @@ use rayon::prelude::*;
 use quantize_rs::onnx_utils::OnnxModel;
 use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
 use quantize_rs::quantization::{QuantConfig, Quantizer};
+#[cfg(feature = "calibration")]
 use quantize_rs::calibration::{CalibrationDataset, ActivationEstimator, methods::CalibrationMethod};
 
-pub fn quantize(input: &str, output: &str, bits: u8, per_channel: bool) -> Result<()> {
+pub fn quantize(
+    input: &str,
+    output: &str,
+    bits: u8,
+    per_channel: bool,
+    excluded_layers: &[String],
+    min_elements: usize,
+    layer_bits: &std::collections::HashMap<String, u8>,
+) -> Result<()> {
     println!("Loading model: {}", input.bold());
 
     let mut model = OnnxModel::load(input)?;
@@ -36,23 +45,52 @@ pub fn quantize(input: &str, output: &str, bits: u8, per_channel: bool) -> Resul
     );
     println!();
 
-    if per_channel {
+    if !layer_bits.is_empty() {
+        println!("Quantizing (mixed precision, default INT{}){}...",
+                 bits, if per_channel { " per-channel" } else { "" });
+        println!("  Layer overrides: {} layer(s) with custom bit-width", layer_bits.len());
+    } else if per_channel {
         println!("Quantizing to INT{} (per-channel)...", bits);
     } else {
         println!("Quantizing to INT{}...", bits);
     }
 
-    let config = QuantConfig { 
-        bits, 
+    if !excluded_layers.is_empty() {
+        println!("  Excluded layers: {}", excluded_layers.join(", "));
+    }
+    if min_elements > 0 {
+        println!("  Min elements:    {}", min_elements);
+    }
+
+    let config = QuantConfig {
+        bits,
         per_channel,
         calibration_method: None,
+        excluded_layers: excluded_layers.to_vec(),
+        min_elements,
+        layer_bits: layer_bits.clone(),
     };
-    let quantizer = Quantizer::new(config);
 
-    // Quantize all weights in parallel
-    let results: Vec<_> = weights.par_iter()
+    // Filter weights according to per-layer policy, then quantize in parallel.
+    let to_quantize: Vec<_> = weights.iter()
+        .filter(|w| config.should_quantize(&w.name, w.num_elements()))
+        .collect();
+
+    let skipped = weights.len() - to_quantize.len();
+    if skipped > 0 {
+        println!("  Skipping {} layer(s) (excluded or below min-elements threshold)", skipped);
+    }
+
+    let results: Vec<_> = to_quantize.par_iter()
         .map(|weight| {
-            let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())?;
+            let layer_bits = config.bits_for_layer(&weight.name);
+            let layer_config = QuantConfig {
+                bits: layer_bits,
+                per_channel: config.per_channel,
+                ..Default::default()
+            };
+            let layer_quantizer = Quantizer::new(layer_config);
+            let quantized = layer_quantizer.quantize_tensor(&weight.data, weight.shape.clone())?;
             let error = quantized.quantization_error(&weight.data);
             let (scales, zero_points) = quantized.get_all_scales_zero_points();
             let is_per_channel = quantized.is_per_channel();
@@ -90,9 +128,21 @@ pub fn quantize(input: &str, output: &str, bits: u8, per_channel: bool) -> Resul
 
     let compression_ratio = original_size as f32 / quantized_size.max(1) as f32;
 
+    let int8_count = quantized_data.iter().filter(|q| q.bits == 8).count();
+    let int4_count = quantized_data.iter().filter(|q| q.bits == 4).count();
+
     println!("✓ Quantization complete");
     println!();
     println!("Results:");
+    println!(
+        "  Quantized:        {}/{} tensors",
+        quantized_data.len(),
+        weights.len()
+    );
+    if int8_count > 0 && int4_count > 0 {
+        println!("  INT8 layers:      {}", int8_count);
+        println!("  INT4 layers:      {}", int4_count);
+    }
     println!(
         "  Original size:    {:.2} MB",
         original_size as f32 / 1_048_576.0
@@ -273,6 +323,7 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "calibration")]
 pub fn calibrate(
     input_path: &str,
     data_path: &str,
@@ -351,6 +402,7 @@ pub fn calibrate(
         bits,
         per_channel,
         calibration_method: Some(method),
+        ..Default::default()
     };
     let quantizer = Quantizer::with_calibration(config, calib_stats);
 
@@ -580,41 +632,44 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     
     if detailed {
         println!("{}", "Detailed Layer Analysis".bold());
-        println!("{}", "-".repeat(60));
-
-        // Detect bit width from QDQ info if available
-        let detected_bits = if is_qdq && !quantized_weight_info.is_empty() {
-            quantized_weight_info[0].bits
-        } else {
-            8
-        };
-        let config = QuantConfig { bits: detected_bits, per_channel: false, calibration_method: None };
-        let quantizer = Quantizer::new(config);
-        
-        println!("{:<40} {:>12} {:>15}", "Layer", "Elements", "MSE Error");
         println!("{}", "-".repeat(68));
-        
-        for weight in original_weights.iter().take(10) { // Show first 10
-            if let Ok(quantized) = quantizer.quantize_tensor(&weight.data, weight.shape.clone()) {
+
+        // Build a per-layer bit map from QDQ metadata so mixed-precision
+        // models show the correct error per layer.
+        let layer_bits_map: std::collections::HashMap<String, u8> = if is_qdq {
+            quantized_weight_info.iter().map(|qw| (qw.name.clone(), qw.bits)).collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+        let default_bits = layer_bits_map.values().next().copied().unwrap_or(8);
+
+        println!("{:<40} {:>5} {:>12} {:>15}", "Layer", "Bits", "Elements", "MSE Error");
+        println!("{}", "-".repeat(75));
+
+        for weight in original_weights.iter().take(10) {
+            let weight_bits = layer_bits_map.get(&weight.name).copied().unwrap_or(default_bits);
+            let wconfig = QuantConfig { bits: weight_bits, per_channel: false, calibration_method: None, ..Default::default() };
+            if let Ok(quantized) = Quantizer::new(wconfig).quantize_tensor(&weight.data, weight.shape.clone()) {
                 let error = quantized.quantization_error(&weight.data);
-                
+
                 let name = if weight.name.len() > 37 {
                     format!("{}...", &weight.name[..37])
                 } else {
                     weight.name.clone()
                 };
-                
-                println!("{:<40} {:>12} {:>15.8}", 
-                         name, 
+
+                println!("{:<40} {:>5} {:>12} {:>15.8}",
+                         name,
+                         weight_bits,
                          weight.data.len(),
                          error);
             }
         }
-        
+
         if original_weights.len() > 10 {
             println!("... ({} more layers)", original_weights.len() - 10);
         }
-        
+
         println!();
     }
     
@@ -641,6 +696,9 @@ pub fn batch(
     per_channel: bool,
     skip_existing: bool,
     continue_on_error: bool,
+    excluded_layers: &[String],
+    min_elements: usize,
+    layer_bits: &std::collections::HashMap<String, u8>,
 ) -> Result<()> {
     println!("{}", "Batch Quantization".bold());
     println!("{}", "=".repeat(60));
@@ -709,7 +767,7 @@ pub fn batch(
             continue;
         }
 
-        match quantize(&input_str, &output_str, bits, per_channel) {
+        match quantize(&input_str, &output_str, bits, per_channel, excluded_layers, min_elements, layer_bits) {
             Ok(_) => {
                 println!("✓ Success");
                 println!();
@@ -809,11 +867,17 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
         for (idx, model_config) in config.models.iter().enumerate() {
             let bits = config.get_bits(model_config);
             let per_channel = config.get_per_channel(model_config);
+            let excluded = config.get_excluded_layers(model_config);
+            let min_elements = config.get_min_elements(model_config);
+            let layer_bits = config.get_layer_bits(model_config);
 
             println!();
             println!("[{}] {}", idx + 1, model_config.input.cyan());
             println!("    → {}", model_config.output.green());
             println!("    Bits: {}, Per-channel: {}", bits, per_channel);
+            if !layer_bits.is_empty() {
+                println!("    Layer overrides: {} layer(s)", layer_bits.len());
+            }
 
             if model_config.skip_existing && Path::new(&model_config.output).exists() {
                 println!("Skipped (already exists)");
@@ -831,7 +895,7 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
                     .with_context(|| format!("Failed to create output directory: {:?}", parent))?;
             }
 
-            match quantize(&model_config.input, &model_config.output, bits, per_channel) {
+            match quantize(&model_config.input, &model_config.output, bits, per_channel, &excluded, min_elements, &layer_bits) {
                 Ok(_) => {
                     println!("✓ Success");
                     total_tasks += 1;
@@ -864,6 +928,9 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
                 config.per_channel,
                 batch_config.skip_existing,
                 batch_config.continue_on_error,
+                &config.excluded_layers,
+                config.min_elements,
+                &Default::default(),
             )?;
         }
     }

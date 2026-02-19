@@ -18,10 +18,13 @@ quantize-rs converts float32 ONNX models to INT8 or INT4 representation using po
 - **Multiple calibration methods** -- MinMax, Percentile (99.9th), Entropy (KL divergence), MSE
 - **ONNX QDQ output format** -- quantized models use `DequantizeLinear` nodes and load directly in ONNX Runtime
 - **Graph connectivity validation** -- verifies that every node input resolves after quantization
+- **Per-layer selection** -- exclude layers by name, set per-layer bit widths, or skip small tensors via `min_elements`
 - **CLI** -- single-model quantization, batch processing, validation, benchmarking, config-file driven workflows
 - **Python bindings** -- via PyO3; install with `pip install quantization-rs`
 - **Typed error handling** -- `QuantizeError` enum at all public API boundaries (no more string-parsing `anyhow` errors)
 - **Rust library** -- usable as a crate dependency; all public items have doc comments
+- **Property-based tests** -- 15 proptest cases covering quantization round-trips, error bounds, and bit-packing
+- **Criterion benchmarks** -- throughput and per-channel comparison benchmarks in `benches/`
 
 ## Installation
 
@@ -50,7 +53,7 @@ cargo install quantize-rs
 
 ```toml
 [dependencies]
-quantize-rs = "0.5"
+quantize-rs = "0.6"
 ```
 
 ## Quick start
@@ -120,6 +123,7 @@ fn main() -> anyhow::Result<()> {
         bits: 8,
         per_channel: true,
         calibration_method: None,
+        ..Default::default()
     };
     let quantizer = Quantizer::new(config);
 
@@ -155,9 +159,11 @@ fn main() -> anyhow::Result<()> {
 quantize-rs quantize <MODEL> [OPTIONS]
 
 Options:
-  -o, --output <FILE>     Output path [default: model_quantized.onnx]
-  -b, --bits <4|8>        Bit width [default: 8]
-      --per-channel       Per-channel quantization
+  -o, --output <FILE>       Output path [default: model_quantized.onnx]
+  -b, --bits <4|8>          Bit width [default: 8]
+      --per-channel         Per-channel quantization
+      --exclude <LAYER>     Exclude a layer by name (repeatable)
+      --min-elements <N>    Skip tensors with fewer than N elements
 ```
 
 ### calibrate
@@ -290,7 +296,7 @@ output = session.run(None, {input_name: x})
 ## Testing
 
 ```bash
-# Rust tests (57 unit + 6 integration tests)
+# Rust tests (90 passing: 63 unit + 12 integration + 15 property-based)
 cargo test
 
 # With output
@@ -298,6 +304,9 @@ cargo test -- --nocapture
 
 # Integration tests requiring model files on disk
 cargo test -- --ignored --nocapture
+
+# Criterion benchmarks
+cargo bench
 
 # Python tests (requires maturin develop)
 pytest test_python_bindings.py -v
@@ -308,7 +317,7 @@ pytest test_python_bindings.py -v
 - ONNX input only. PyTorch and TensorFlow models must be exported to ONNX first.
 - Per-channel DequantizeLinear writes 1-D scale/zero_point tensors with the `axis` attribute. ONNX Runtime supports this in opset >= 13.
 - INT4 values are stored as INT8 bytes in the ONNX file. True 4-bit packing requires opset 21 or a custom operator.
-- Quantizes all weight tensors. Per-layer selection is not yet supported.
+- Activation calibration uses tract for inference; tract may not support all ONNX ops found in large production models.
 
 ## Contributing
 
@@ -326,4 +335,4 @@ pytest test_python_bindings.py -v
 
 - [tract](https://github.com/sonos/tract) -- ONNX inference engine used for activation calibration
 - [PyO3](https://github.com/PyO3/pyo3) -- Rust/Python interop
-- [protobuf](https://crates.io/crates/protobuf) / [onnx-rs](https://crates.io/crates/onnx) -- ONNX protobuf parsing
+- [prost](https://github.com/tokio-rs/prost) + [protox](https://github.com/andrewhickman/protox) -- pure-Rust ONNX protobuf pipeline (no system `protoc` required)

@@ -47,16 +47,21 @@ impl ActivationStats {
             return Self::default();
         }
 
-        let min = data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
-        let max = data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
+        let finite: Vec<f32> = data.iter().copied().filter(|v| v.is_finite()).collect();
+        if finite.is_empty() {
+            return Self::default();
+        }
 
-        let sum: f32 = data.iter().sum();
-        let mean = sum / data.len() as f32;
+        let min = finite.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = finite.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 
-        let m2: f64 = data.iter()
+        let sum: f32 = finite.iter().sum();
+        let mean = sum / finite.len() as f32;
+
+        let m2: f64 = finite.iter()
             .map(|&x| ((x - mean) as f64).powi(2))
             .sum();
-        let std = (m2 / data.len() as f64).sqrt() as f32;
+        let std = (m2 / finite.len() as f64).sqrt() as f32;
 
         let histogram_bins = build_histogram(data, min, max);
 
@@ -65,7 +70,7 @@ impl ActivationStats {
             max,
             mean,
             std,
-            count: data.len(),
+            count: finite.len(),
             m2,
             histogram_bins,
             hist_min: min,

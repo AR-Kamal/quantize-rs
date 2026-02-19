@@ -19,6 +19,11 @@
 //! which matches the dequantize formula already used in `QuantParams` and
 //! `QuantParamsInt4`.
 
+use crate::onnx_proto::{
+    AttributeProto, NodeProto, TensorProto,
+    attribute_proto, tensor_proto,
+};
+
 // ---------------------------------------------------------------------------
 // Name generation
 // ---------------------------------------------------------------------------
@@ -68,26 +73,29 @@ impl DequantLinearNames {
 pub fn build_dequantize_linear_node(
     names: &DequantLinearNames,
     axis: Option<usize>,
-) -> onnx::onnx::NodeProto {
-    let mut node = onnx::onnx::NodeProto::new();
-    node.set_op_type("DequantizeLinear".to_string());
-    node.set_name(names.node_name.clone());
+) -> NodeProto {
+    let attribute = match axis {
+        Some(a) => vec![AttributeProto {
+            name:   "axis".to_string(),
+            r#type: attribute_proto::AttributeType::Int as i32,
+            i:      a as i64,
+            ..Default::default()
+        }],
+        None => vec![],
+    };
 
-    node.mut_input().push(names.quantized_name.clone());
-    node.mut_input().push(names.scale_name.clone());
-    node.mut_input().push(names.zp_name.clone());
-
-    node.mut_output().push(names.output_name.clone());
-
-    if let Some(a) = axis {
-        let mut attr = onnx::onnx::AttributeProto::new();
-        attr.set_name("axis".to_string());
-        attr.set_field_type(onnx::onnx::AttributeProto_AttributeType::INT);
-        attr.set_i(a as i64);
-        node.mut_attribute().push(attr);
+    NodeProto {
+        op_type:   "DequantizeLinear".to_string(),
+        name:      names.node_name.clone(),
+        input:     vec![
+            names.quantized_name.clone(),
+            names.scale_name.clone(),
+            names.zp_name.clone(),
+        ],
+        output:    vec![names.output_name.clone()],
+        attribute,
+        ..Default::default()
     }
-
-    node
 }
 
 // ---------------------------------------------------------------------------
@@ -103,18 +111,15 @@ pub fn build_quantized_weight_tensor(
     names: &DequantLinearNames,
     values: &[i8],
     shape: &[i64],
-) -> onnx::onnx::TensorProto {
-    let mut t = onnx::onnx::TensorProto::new();
-    t.set_name(names.quantized_name.clone());
-    t.set_data_type(onnx::onnx::TensorProto_DataType::INT8);
-
-    for &d in shape {
-        t.mut_dims().push(d);
+) -> TensorProto {
+    TensorProto {
+        name:      names.quantized_name.clone(),
+        data_type: tensor_proto::DataType::Int8 as i32,
+        dims:      shape.to_vec(),
+        // Each i8 value → one byte.  Reinterpret cast, not value conversion.
+        raw_data:  values.iter().map(|&v| v as u8).collect(),
+        ..Default::default()
     }
-
-    // Each i8 value → one byte.  Reinterpret cast, not value conversion.
-    t.set_raw_data(values.iter().map(|&v| v as u8).collect());
-    t
 }
 
 /// FP32 scale tensor.
@@ -122,21 +127,18 @@ pub fn build_quantized_weight_tensor(
 /// For per-tensor quantization, `scales` has one element and the tensor
 /// is rank-0 (scalar).  For per-channel, `scales` has one entry per
 /// channel and the tensor is rank-1 with shape `[num_channels]`.
-pub fn build_scale_tensor(names: &DequantLinearNames, scales: &[f32]) -> onnx::onnx::TensorProto {
-    let mut t = onnx::onnx::TensorProto::new();
-    t.set_name(names.scale_name.clone());
-    t.set_data_type(onnx::onnx::TensorProto_DataType::FLOAT);
-
-    if scales.len() == 1 {
-        // rank-0 scalar
-        t.mut_float_data().push(scales[0]);
-    } else {
+pub fn build_scale_tensor(names: &DequantLinearNames, scales: &[f32]) -> TensorProto {
+    let mut t = TensorProto {
+        name:       names.scale_name.clone(),
+        data_type:  tensor_proto::DataType::Float as i32,
+        float_data: scales.to_vec(),
+        ..Default::default()
+    };
+    if scales.len() > 1 {
         // rank-1: [num_channels]
-        t.mut_dims().push(scales.len() as i64);
-        for &s in scales {
-            t.mut_float_data().push(s);
-        }
+        t.dims = vec![scales.len() as i64];
     }
+    // For scalar (len == 1), dims remains empty (rank-0 scalar).
     t
 }
 
@@ -144,19 +146,18 @@ pub fn build_scale_tensor(names: &DequantLinearNames, scales: &[f32]) -> onnx::o
 ///
 /// For per-tensor, `zps` has one element → rank-0 scalar.
 /// For per-channel, `zps` has one per channel → rank-1 `[num_channels]`.
-pub fn build_zero_point_tensor(names: &DequantLinearNames, zps: &[i8]) -> onnx::onnx::TensorProto {
-    let mut t = onnx::onnx::TensorProto::new();
-    t.set_name(names.zp_name.clone());
-    t.set_data_type(onnx::onnx::TensorProto_DataType::INT8);
-
-    if zps.len() == 1 {
-        // rank-0 scalar
-        t.set_raw_data(vec![zps[0] as u8]);
-    } else {
+pub fn build_zero_point_tensor(names: &DequantLinearNames, zps: &[i8]) -> TensorProto {
+    let mut t = TensorProto {
+        name:      names.zp_name.clone(),
+        data_type: tensor_proto::DataType::Int8 as i32,
+        raw_data:  zps.iter().map(|&v| v as u8).collect(),
+        ..Default::default()
+    };
+    if zps.len() > 1 {
         // rank-1: [num_channels]
-        t.mut_dims().push(zps.len() as i64);
-        t.set_raw_data(zps.iter().map(|&v| v as u8).collect());
+        t.dims = vec![zps.len() as i64];
     }
+    // For scalar (len == 1), dims remains empty (rank-0 scalar).
     t
 }
 
@@ -167,6 +168,7 @@ pub fn build_zero_point_tensor(names: &DequantLinearNames, zps: &[i8]) -> onnx::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::onnx_proto::tensor_proto;
 
     #[test]
     fn test_names_from_simple_weight() {
@@ -191,19 +193,17 @@ mod tests {
         let names = DequantLinearNames::from_original("fc.weight");
         let node = build_dequantize_linear_node(&names, None);
 
-        assert_eq!(node.get_op_type(), "DequantizeLinear");
-        assert_eq!(node.get_name(),    "DequantizeLinear_fc.weight");
+        assert_eq!(node.op_type, "DequantizeLinear");
+        assert_eq!(node.name,    "DequantizeLinear_fc.weight");
 
-        let inputs = node.get_input();
-        assert_eq!(inputs.len(), 3);
-        assert_eq!(inputs[0], "fc.weight_quantized");
-        assert_eq!(inputs[1], "fc.weight_scale");
-        assert_eq!(inputs[2], "fc.weight_zp");
+        assert_eq!(node.input.len(), 3);
+        assert_eq!(node.input[0], "fc.weight_quantized");
+        assert_eq!(node.input[1], "fc.weight_scale");
+        assert_eq!(node.input[2], "fc.weight_zp");
 
-        let outputs = node.get_output();
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0], "fc.weight");
-        assert!(node.get_attribute().is_empty());
+        assert_eq!(node.output.len(), 1);
+        assert_eq!(node.output[0], "fc.weight");
+        assert!(node.attribute.is_empty());
     }
 
     #[test]
@@ -211,9 +211,9 @@ mod tests {
         let names = DequantLinearNames::from_original("conv.weight");
         let node = build_dequantize_linear_node(&names, Some(0));
 
-        assert_eq!(node.get_attribute().len(), 1);
-        assert_eq!(node.get_attribute()[0].get_name(), "axis");
-        assert_eq!(node.get_attribute()[0].get_i(), 0);
+        assert_eq!(node.attribute.len(), 1);
+        assert_eq!(node.attribute[0].name, "axis");
+        assert_eq!(node.attribute[0].i, 0);
     }
 
     #[test]
@@ -223,14 +223,14 @@ mod tests {
         let shape  = vec![2i64, 3];
         let t = build_quantized_weight_tensor(&names, &values, &shape);
 
-        assert_eq!(t.get_name(),      "w_quantized");
-        assert_eq!(t.get_data_type(), onnx::onnx::TensorProto_DataType::INT8);
-        assert_eq!(t.get_dims().len(), 2);
-        assert_eq!(t.get_dims()[0], 2);
-        assert_eq!(t.get_dims()[1], 3);
+        assert_eq!(t.name,      "w_quantized");
+        assert_eq!(t.data_type, tensor_proto::DataType::Int8 as i32);
+        assert_eq!(t.dims.len(), 2);
+        assert_eq!(t.dims[0], 2);
+        assert_eq!(t.dims[1], 3);
 
         // Verify byte-level round-trip
-        let recovered: Vec<i8> = t.get_raw_data().iter().map(|&b| b as i8).collect();
+        let recovered: Vec<i8> = t.raw_data.iter().map(|&b| b as i8).collect();
         assert_eq!(recovered, values);
     }
 
@@ -239,10 +239,10 @@ mod tests {
         let names = DequantLinearNames::from_original("w");
         let t = build_scale_tensor(&names, &[0.003921]);
 
-        assert_eq!(t.get_name(),      "w_scale");
-        assert_eq!(t.get_data_type(), onnx::onnx::TensorProto_DataType::FLOAT);
-        assert_eq!(t.get_dims().len(), 0, "single scale must be rank-0 scalar");
-        assert!((t.get_float_data()[0] - 0.003921).abs() < 1e-6);
+        assert_eq!(t.name,      "w_scale");
+        assert_eq!(t.data_type, tensor_proto::DataType::Float as i32);
+        assert_eq!(t.dims.len(), 0, "single scale must be rank-0 scalar");
+        assert!((t.float_data[0] - 0.003921).abs() < 1e-6);
     }
 
     #[test]
@@ -250,9 +250,9 @@ mod tests {
         let names = DequantLinearNames::from_original("w");
         let t = build_scale_tensor(&names, &[0.01, 0.02, 0.03]);
 
-        assert_eq!(t.get_dims().len(), 1);
-        assert_eq!(t.get_dims()[0], 3);
-        assert_eq!(t.get_float_data().len(), 3);
+        assert_eq!(t.dims.len(), 1);
+        assert_eq!(t.dims[0], 3);
+        assert_eq!(t.float_data.len(), 3);
     }
 
     #[test]
@@ -260,10 +260,10 @@ mod tests {
         let names = DequantLinearNames::from_original("w");
         let t = build_zero_point_tensor(&names, &[-3]);
 
-        assert_eq!(t.get_name(),      "w_zp");
-        assert_eq!(t.get_data_type(), onnx::onnx::TensorProto_DataType::INT8);
-        assert_eq!(t.get_dims().len(), 0, "single zp must be rank-0 scalar");
-        assert_eq!(t.get_raw_data()[0], (-3i8) as u8);
+        assert_eq!(t.name,      "w_zp");
+        assert_eq!(t.data_type, tensor_proto::DataType::Int8 as i32);
+        assert_eq!(t.dims.len(), 0, "single zp must be rank-0 scalar");
+        assert_eq!(t.raw_data[0], (-3i8) as u8);
     }
 
     #[test]
@@ -271,9 +271,9 @@ mod tests {
         let names = DequantLinearNames::from_original("w");
         let t = build_zero_point_tensor(&names, &[-3, 0, 5]);
 
-        assert_eq!(t.get_dims().len(), 1);
-        assert_eq!(t.get_dims()[0], 3);
-        assert_eq!(t.get_raw_data().len(), 3);
+        assert_eq!(t.dims.len(), 1);
+        assert_eq!(t.dims[0], 3);
+        assert_eq!(t.raw_data.len(), 3);
     }
 
     #[test]
@@ -284,7 +284,7 @@ mod tests {
         let shape  = vec![4i64];
         let t = build_quantized_weight_tensor(&names, &values, &shape);
 
-        let recovered: Vec<i8> = t.get_raw_data().iter().map(|&b| b as i8).collect();
+        let recovered: Vec<i8> = t.raw_data.iter().map(|&b| b as i8).collect();
         assert_eq!(recovered, values);
     }
 }

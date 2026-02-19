@@ -1,0 +1,12 @@
+# Core — always required
+onnxruntime>=1.17.0
+transformers>=4.35.0
+numpy>=1.24.0
+
+# Required for --export only
+# Any torch 2.x works; the export uses torch.jit.trace + legacy ONNX exporter
+# (opset 14) so onnxscript is NOT required.
+torch>=2.0.0
+
+# Optional — enables real WikiText-2 perplexity instead of built-in texts
+# datasets>=2.14.0

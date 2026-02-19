@@ -6,6 +6,7 @@
 //!   3. **Opset management** — ensure the model declares opset ≥ 13
 
 use crate::errors::{QuantizeError, Result};
+use crate::onnx_proto::{GraphProto, ModelProto, OperatorSetIdProto};
 use std::collections::{HashMap, HashSet};
 
 use super::quantization_nodes::{
@@ -83,36 +84,34 @@ impl ConnectivityReport {
 ///
 /// This is the check ONNX Runtime performs on load — and the check that
 /// v0.2.0's `validate` command skipped, letting the rename bug through.
-pub fn validate_graph_connectivity(graph: &onnx::onnx::GraphProto) -> ConnectivityReport {
+pub fn validate_graph_connectivity(graph: &GraphProto) -> ConnectivityReport {
     let mut known: HashSet<String> = HashSet::new();
 
     // Seed: graph inputs + initializers are always available
-    for inp in graph.get_input().iter() {
-        known.insert(inp.get_name().to_string());
+    for inp in &graph.input {
+        known.insert(inp.name.clone());
     }
-    for init in graph.get_initializer().iter() {
-        known.insert(init.get_name().to_string());
+    for init in &graph.initializer {
+        known.insert(init.name.clone());
     }
 
     let mut broken = Vec::new();
 
     // Walk nodes in serialized order; each node's outputs become known afterwards
-    for node in graph.get_node().iter() {
-        for name in node.get_input().iter() {
+    for node in &graph.node {
+        for name in &node.input {
             if name.is_empty() {
                 continue; // optional input slot — empty string is valid
             }
             if !known.contains(name.as_str()) {
                 broken.push(format!(
                     "Node '{}' (op={}) → unknown input '{}'",
-                    node.get_name(),
-                    node.get_op_type(),
-                    name
+                    node.name, node.op_type, name
                 ));
             }
         }
         // Register outputs so later nodes can consume them
-        for name in node.get_output().iter() {
+        for name in &node.output {
             if !name.is_empty() {
                 known.insert(name.clone());
             }
@@ -132,23 +131,23 @@ pub fn validate_graph_connectivity(graph: &onnx::onnx::GraphProto) -> Connectivi
 /// Ensure the default ONNX domain opset is at least `min_version`.
 ///
 /// DequantizeLinear requires opset ≥ 10 (per-tensor) or ≥ 13 (per-channel axis).
-/// We always request 13 to leave the door open for per-channel in v0.4.0.
-pub fn ensure_opset_version(model: &mut onnx::onnx::ModelProto, min_version: i64) {
+/// We always request 13 to leave the door open for per-channel.
+pub fn ensure_opset_version(model: &mut ModelProto, min_version: i64) {
     // The default ONNX domain is identified by an empty string
-    for opset in model.mut_opset_import().iter_mut() {
-        if opset.get_domain().is_empty() {
-            if opset.get_version() < min_version {
-                opset.set_version(min_version);
+    for opset in model.opset_import.iter_mut() {
+        if opset.domain.is_empty() {
+            if opset.version < min_version {
+                opset.version = min_version;
             }
             return; // found and updated (or already sufficient)
         }
     }
 
     // No default-domain entry at all — add one
-    let mut opset = onnx::onnx::OperatorSetIdProto::new();
-    // domain defaults to "" which IS the standard ONNX domain
-    opset.set_version(min_version);
-    model.mut_opset_import().push(opset);
+    model.opset_import.push(OperatorSetIdProto {
+        domain:  String::new(), // "" = standard ONNX domain
+        version: min_version,
+    });
 }
 
 // ===========================================================================
@@ -182,33 +181,18 @@ pub fn ensure_opset_version(model: &mut onnx::onnx::ModelProto, min_version: i64
 /// values (range [-8, 7]) are widened to INT8 here.  The quantization *accuracy*
 /// is INT4-level (scale and zero_point were computed for the 4-bit range), but
 /// on-disk storage is 4× compression rather than the 8× that bit-packing would
-/// give.  True INT4 packing is planned for v0.4.0 (opset 21 or a custom op).
-///
-/// ---
-/// ### Per-channel note (TODO v0.4.0)
-///
-/// The current `save_quantized` signature carries a single `(scale, zero_point)`
-/// per tensor.  Per-channel quantization computes per-channel params internally
-/// but only channel-0's params survive to here.  Fixing this requires:
-///   - Changing the signature to `Vec<f32>` scales + `Vec<i8>` zero_points
-///   - Adding the `axis` attribute to the DequantizeLinear node
-///   - Making scale/zp tensors 1-D (shape = \[num_channels\])
+/// give.  True INT4 packing is planned for a future version (opset 21 or custom op).
 pub fn apply_qdq_transform(
-    graph: &mut onnx::onnx::GraphProto,
+    graph: &mut GraphProto,
     inputs: &[QdqWeightInput],
 ) -> Result<()> {
     // -----------------------------------------------------------------------
     // 0.  Snapshot shapes before modifying the initializer list
     // -----------------------------------------------------------------------
     let shape_map: HashMap<String, Vec<i64>> = graph
-        .get_initializer()
+        .initializer
         .iter()
-        .map(|init| {
-            (
-                init.get_name().to_string(),
-                init.get_dims().to_vec(),
-            )
-        })
+        .map(|init| (init.name.clone(), init.dims.clone()))
         .collect();
 
     let quant_set: HashSet<&str> = inputs.iter().map(|i| i.original_name.as_str()).collect();
@@ -216,17 +200,7 @@ pub fn apply_qdq_transform(
     // -----------------------------------------------------------------------
     // 1.  Remove the original FP32 initializers for every weight we're replacing
     // -----------------------------------------------------------------------
-    let kept: Vec<onnx::onnx::TensorProto> = graph
-        .get_initializer()
-        .iter()
-        .filter(|init| !quant_set.contains(init.get_name()))
-        .cloned()
-        .collect();
-
-    graph.mut_initializer().clear();
-    for t in kept {
-        graph.mut_initializer().push(t);
-    }
+    graph.initializer.retain(|init| !quant_set.contains(init.name.as_str()));
 
     // -----------------------------------------------------------------------
     // 1b. Also remove weights from graph.input (critical fix for "Duplicate definition")
@@ -234,17 +208,7 @@ pub fn apply_qdq_transform(
     // Some ONNX models list weights as both initializers AND graph inputs.
     // This is valid ONNX, but when DequantizeLinear outputs reuse the original
     // weight names, ONNX Runtime sees two definitions of the same tensor.
-    let kept_inputs: Vec<onnx::onnx::ValueInfoProto> = graph
-        .get_input()
-        .iter()
-        .filter(|inp| !quant_set.contains(inp.get_name()))
-        .cloned()
-        .collect();
-
-    graph.mut_input().clear();
-    for inp in kept_inputs {
-        graph.mut_input().push(inp);
-    }
+    graph.input.retain(|inp| !quant_set.contains(inp.name.as_str()));
 
     // -----------------------------------------------------------------------
     // 2.  Add quantized initializer triples + build DequantizeLinear nodes
@@ -276,13 +240,13 @@ pub fn apply_qdq_transform(
 
         let names = DequantLinearNames::from_original(&inp.original_name);
 
-        graph.mut_initializer().push(
+        graph.initializer.push(
             build_quantized_weight_tensor(&names, &inp.quantized_values, shape),
         );
-        graph.mut_initializer().push(
+        graph.initializer.push(
             build_scale_tensor(&names, &inp.scales),
         );
-        graph.mut_initializer().push(
+        graph.initializer.push(
             build_zero_point_tensor(&names, &inp.zero_points),
         );
 
@@ -294,16 +258,9 @@ pub fn apply_qdq_transform(
     //     They must appear first so their outputs are "known" when the validator
     //     (or ONNX Runtime) walks the node list in order.
     // -----------------------------------------------------------------------
-    let existing_nodes: Vec<onnx::onnx::NodeProto> =
-        graph.get_node().to_vec();
-    graph.mut_node().clear();
-
-    for node in dq_nodes {
-        graph.mut_node().push(node);
-    }
-    for node in existing_nodes {
-        graph.mut_node().push(node);
-    }
+    let existing_nodes = std::mem::take(&mut graph.node);
+    graph.node = dq_nodes;
+    graph.node.extend(existing_nodes);
 
     Ok(())
 }
@@ -315,6 +272,10 @@ pub fn apply_qdq_transform(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::onnx_proto::{
+        GraphProto, ModelProto, NodeProto, OperatorSetIdProto,
+        TensorProto, ValueInfoProto, tensor_proto,
+    };
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -322,75 +283,65 @@ mod tests {
 
     /// Minimal graph: one graph input "input", one FP32 initializer "w" (shape [2,2]),
     /// one Conv node consuming both, producing "out".
-    fn make_simple_graph() -> onnx::onnx::GraphProto {
-        let mut graph = onnx::onnx::GraphProto::new();
-
-        // graph input
-        let mut inp = onnx::onnx::ValueInfoProto::new();
-        inp.set_name("input".to_string());
-        graph.mut_input().push(inp);
-
-        // initializer "w"
-        let mut w = onnx::onnx::TensorProto::new();
-        w.set_name("w".to_string());
-        w.set_data_type(onnx::onnx::TensorProto_DataType::FLOAT);
-        w.mut_dims().push(2);
-        w.mut_dims().push(2);
-        w.mut_float_data().push(1.0);
-        w.mut_float_data().push(2.0);
-        w.mut_float_data().push(3.0);
-        w.mut_float_data().push(4.0);
-        graph.mut_initializer().push(w);
-
-        // Conv node
-        let mut conv = onnx::onnx::NodeProto::new();
-        conv.set_op_type("Conv".to_string());
-        conv.set_name("conv0".to_string());
-        conv.mut_input().push("input".to_string());
-        conv.mut_input().push("w".to_string());
-        conv.mut_output().push("out".to_string());
-        graph.mut_node().push(conv);
-
-        graph
+    fn make_simple_graph() -> GraphProto {
+        GraphProto {
+            input: vec![ValueInfoProto { name: "input".to_string(), ..Default::default() }],
+            initializer: vec![TensorProto {
+                name:       "w".to_string(),
+                data_type:  tensor_proto::DataType::Float as i32,
+                dims:       vec![2, 2],
+                float_data: vec![1.0, 2.0, 3.0, 4.0],
+                ..Default::default()
+            }],
+            node: vec![NodeProto {
+                op_type: "Conv".to_string(),
+                name:    "conv0".to_string(),
+                input:   vec!["input".to_string(), "w".to_string()],
+                output:  vec!["out".to_string()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
     }
 
     /// Two-weight graph: "w1" and "w2", two Conv nodes chained.
-    fn make_two_weight_graph() -> onnx::onnx::GraphProto {
-        let mut graph = onnx::onnx::GraphProto::new();
-
-        let mut inp = onnx::onnx::ValueInfoProto::new();
-        inp.set_name("input".to_string());
-        graph.mut_input().push(inp);
-
-        for (name, vals) in [("w1", [1.0, 2.0, 3.0, 4.0]), ("w2", [5.0, 6.0, 7.0, 8.0])] {
-            let mut w = onnx::onnx::TensorProto::new();
-            w.set_name(name.to_string());
-            w.set_data_type(onnx::onnx::TensorProto_DataType::FLOAT);
-            w.mut_dims().push(2);
-            w.mut_dims().push(2);
-            for v in vals {
-                w.mut_float_data().push(v);
-            }
-            graph.mut_initializer().push(w);
+    fn make_two_weight_graph() -> GraphProto {
+        GraphProto {
+            input: vec![ValueInfoProto { name: "input".to_string(), ..Default::default() }],
+            initializer: vec![
+                TensorProto {
+                    name:       "w1".to_string(),
+                    data_type:  tensor_proto::DataType::Float as i32,
+                    dims:       vec![2, 2],
+                    float_data: vec![1.0, 2.0, 3.0, 4.0],
+                    ..Default::default()
+                },
+                TensorProto {
+                    name:       "w2".to_string(),
+                    data_type:  tensor_proto::DataType::Float as i32,
+                    dims:       vec![2, 2],
+                    float_data: vec![5.0, 6.0, 7.0, 8.0],
+                    ..Default::default()
+                },
+            ],
+            node: vec![
+                NodeProto {
+                    op_type: "Conv".to_string(),
+                    name:    "conv1".to_string(),
+                    input:   vec!["input".to_string(), "w1".to_string()],
+                    output:  vec!["mid".to_string()],
+                    ..Default::default()
+                },
+                NodeProto {
+                    op_type: "Conv".to_string(),
+                    name:    "conv2".to_string(),
+                    input:   vec!["mid".to_string(), "w2".to_string()],
+                    output:  vec!["out".to_string()],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
         }
-
-        let mut conv1 = onnx::onnx::NodeProto::new();
-        conv1.set_op_type("Conv".to_string());
-        conv1.set_name("conv1".to_string());
-        conv1.mut_input().push("input".to_string());
-        conv1.mut_input().push("w1".to_string());
-        conv1.mut_output().push("mid".to_string());
-        graph.mut_node().push(conv1);
-
-        let mut conv2 = onnx::onnx::NodeProto::new();
-        conv2.set_op_type("Conv".to_string());
-        conv2.set_name("conv2".to_string());
-        conv2.mut_input().push("mid".to_string());
-        conv2.mut_input().push("w2".to_string());
-        conv2.mut_output().push("out".to_string());
-        graph.mut_node().push(conv2);
-
-        graph
     }
 
     // -----------------------------------------------------------------------
@@ -414,14 +365,10 @@ mod tests {
         // without updating the Conv node that references it.
         let mut graph = make_simple_graph();
 
-        let inits: Vec<onnx::onnx::TensorProto> =
-            graph.get_initializer().iter().cloned().collect();
-        graph.mut_initializer().clear();
-        for mut init in inits {
-            if init.get_name() == "w" {
-                init.set_name("w__qINT8_s0.00392_z-3_len4".to_string());
+        for init in graph.initializer.iter_mut() {
+            if init.name == "w" {
+                init.name = "w__qINT8_s0.00392_z-3_len4".to_string();
             }
-            graph.mut_initializer().push(init);
         }
 
         let report = validate_graph_connectivity(&graph);
@@ -438,17 +385,12 @@ mod tests {
     fn test_connectivity_detects_multiple_broken_refs() {
         let mut graph = make_two_weight_graph();
 
-        // Rename both w1 and w2
-        let inits: Vec<onnx::onnx::TensorProto> =
-            graph.get_initializer().iter().cloned().collect();
-        graph.mut_initializer().clear();
-        for mut init in inits {
-            if init.get_name() == "w1" {
-                init.set_name("w1_broken".to_string());
-            } else if init.get_name() == "w2" {
-                init.set_name("w2_broken".to_string());
+        for init in graph.initializer.iter_mut() {
+            if init.name == "w1" {
+                init.name = "w1_broken".to_string();
+            } else if init.name == "w2" {
+                init.name = "w2_broken".to_string();
             }
-            graph.mut_initializer().push(init);
         }
 
         let report = validate_graph_connectivity(&graph);
@@ -480,39 +422,37 @@ mod tests {
 
     #[test]
     fn test_ensure_opset_bumps_low_version() {
-        let mut model = onnx::onnx::ModelProto::new();
-        let mut opset = onnx::onnx::OperatorSetIdProto::new();
-        opset.set_version(10);
-        model.mut_opset_import().push(opset);
+        let mut model = ModelProto {
+            opset_import: vec![OperatorSetIdProto { domain: String::new(), version: 10 }],
+            ..Default::default()
+        };
 
         ensure_opset_version(&mut model, 13);
 
-        let v = model.get_opset_import()[0].get_version();
-        assert_eq!(v, 13);
+        assert_eq!(model.opset_import[0].version, 13);
     }
 
     #[test]
     fn test_ensure_opset_leaves_sufficient_version() {
-        let mut model = onnx::onnx::ModelProto::new();
-        let mut opset = onnx::onnx::OperatorSetIdProto::new();
-        opset.set_version(17);
-        model.mut_opset_import().push(opset);
+        let mut model = ModelProto {
+            opset_import: vec![OperatorSetIdProto { domain: String::new(), version: 17 }],
+            ..Default::default()
+        };
 
         ensure_opset_version(&mut model, 13);
 
-        let v = model.get_opset_import()[0].get_version();
-        assert_eq!(v, 17, "should not downgrade");
+        assert_eq!(model.opset_import[0].version, 17, "should not downgrade");
     }
 
     #[test]
     fn test_ensure_opset_adds_missing_default_domain() {
-        let mut model = onnx::onnx::ModelProto::new();
+        let mut model = ModelProto::default();
         // No opset_import at all
         ensure_opset_version(&mut model, 13);
 
-        assert_eq!(model.get_opset_import().len(), 1);
-        assert!(model.get_opset_import()[0].get_domain().is_empty());
-        assert_eq!(model.get_opset_import()[0].get_version(), 13);
+        assert_eq!(model.opset_import.len(), 1);
+        assert!(model.opset_import[0].domain.is_empty());
+        assert_eq!(model.opset_import[0].version, 13);
     }
 
     // -----------------------------------------------------------------------
@@ -557,17 +497,13 @@ mod tests {
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
 
-        let init_names: Vec<String> = graph
-            .get_initializer()
-            .iter()
-            .map(|i| i.get_name().to_string())
-            .collect();
+        let init_names: Vec<&str> = graph.initializer.iter().map(|i| i.name.as_str()).collect();
 
-        assert!(init_names.contains(&"w_quantized".to_string()), "missing w_quantized");
-        assert!(init_names.contains(&"w_scale".to_string()),     "missing w_scale");
-        assert!(init_names.contains(&"w_zp".to_string()),        "missing w_zp");
+        assert!(init_names.contains(&"w_quantized"), "missing w_quantized");
+        assert!(init_names.contains(&"w_scale"),     "missing w_scale");
+        assert!(init_names.contains(&"w_zp"),        "missing w_zp");
         assert!(
-            !init_names.contains(&"w".to_string()),
+            !init_names.contains(&"w"),
             "original FP32 'w' should be removed"
         );
     }
@@ -587,11 +523,7 @@ mod tests {
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
 
-        let ops: Vec<String> = graph
-            .get_node()
-            .iter()
-            .map(|n| n.get_op_type().to_string())
-            .collect();
+        let ops: Vec<&str> = graph.node.iter().map(|n| n.op_type.as_str()).collect();
 
         assert_eq!(ops.len(), 2);
         assert_eq!(ops[0], "DequantizeLinear");
@@ -613,8 +545,8 @@ mod tests {
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
 
-        let dq = &graph.get_node()[0]; // first node = DequantizeLinear
-        assert_eq!(dq.get_output()[0], "w", "DequantizeLinear output must be original name");
+        let dq = &graph.node[0]; // first node = DequantizeLinear
+        assert_eq!(dq.output[0], "w", "DequantizeLinear output must be original name");
     }
 
     #[test]
@@ -647,21 +579,18 @@ mod tests {
         assert!(report.valid, "two-weight graph broken: {:?}", report.broken_refs);
 
         // Should have 2 DequantizeLinear + 2 Conv = 4 nodes
-        assert_eq!(graph.get_node().len(), 4);
+        assert_eq!(graph.node.len(), 4);
 
         // First two nodes are DequantizeLinear
-        assert_eq!(graph.get_node()[0].get_op_type(), "DequantizeLinear");
-        assert_eq!(graph.get_node()[1].get_op_type(), "DequantizeLinear");
+        assert_eq!(graph.node[0].op_type, "DequantizeLinear");
+        assert_eq!(graph.node[1].op_type, "DequantizeLinear");
 
         // Their outputs are the original weight names
-        let dq_outputs: Vec<String> = graph
-            .get_node()
-            .iter()
-            .take(2)
-            .map(|n| n.get_output()[0].clone())
+        let dq_outputs: Vec<&str> = graph.node.iter().take(2)
+            .map(|n| n.output[0].as_str())
             .collect();
-        assert!(dq_outputs.contains(&"w1".to_string()));
-        assert!(dq_outputs.contains(&"w2".to_string()));
+        assert!(dq_outputs.contains(&"w1"));
+        assert!(dq_outputs.contains(&"w2"));
     }
 
     #[test]
@@ -681,16 +610,16 @@ mod tests {
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
 
         let quant_init = graph
-            .get_initializer()
+            .initializer
             .iter()
-            .find(|i| i.get_name() == "w_quantized")
+            .find(|i| i.name == "w_quantized")
             .expect("w_quantized not found");
 
         // Data type must be INT8 (ONNX DequantizeLinear requirement)
-        assert_eq!(quant_init.get_data_type(), onnx::onnx::TensorProto_DataType::INT8);
+        assert_eq!(quant_init.data_type, tensor_proto::DataType::Int8 as i32);
 
         // Byte-level round-trip must be exact
-        let recovered: Vec<i8> = quant_init.get_raw_data().iter().map(|&b| b as i8).collect();
+        let recovered: Vec<i8> = quant_init.raw_data.iter().map(|&b| b as i8).collect();
         assert_eq!(recovered, vec![-8, -1, 0, 7]);
     }
 
@@ -721,16 +650,16 @@ mod tests {
         // It must survive the transform untouched.
         let mut graph = make_simple_graph();
 
-        let mut bias = onnx::onnx::TensorProto::new();
-        bias.set_name("bias".to_string());
-        bias.set_data_type(onnx::onnx::TensorProto_DataType::FLOAT);
-        bias.mut_dims().push(2);
-        bias.mut_float_data().push(0.1);
-        bias.mut_float_data().push(0.2);
-        graph.mut_initializer().push(bias);
+        graph.initializer.push(TensorProto {
+            name:       "bias".to_string(),
+            data_type:  tensor_proto::DataType::Float as i32,
+            dims:       vec![2],
+            float_data: vec![0.1, 0.2],
+            ..Default::default()
+        });
 
         // Also add "bias" as a Conv input so connectivity stays valid
-        graph.mut_node()[0].mut_input().push("bias".to_string());
+        graph.node[0].input.push("bias".to_string());
 
         let inputs = vec![QdqWeightInput {
             original_name:    "w".to_string(),
@@ -744,13 +673,10 @@ mod tests {
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
 
         // "bias" must still be present and untouched
-        let bias_init = graph
-            .get_initializer()
-            .iter()
-            .find(|i| i.get_name() == "bias");
+        let bias_init = graph.initializer.iter().find(|i| i.name == "bias");
 
         assert!(bias_init.is_some(), "non-quantized 'bias' initializer must be preserved");
-        assert_eq!(bias_init.unwrap().get_float_data()[0], 0.1);
+        assert!((bias_init.unwrap().float_data[0] - 0.1).abs() < 1e-6);
 
         // Full connectivity check
         let report = validate_graph_connectivity(&graph);

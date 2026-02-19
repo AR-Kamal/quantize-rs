@@ -6,13 +6,15 @@
 //! - [`inference::ActivationEstimator`] — run inference to collect activation stats
 
 use crate::errors::{QuantizeError, Result};
-use ndarray::{Array, IxDyn};
+#[cfg(feature = "calibration")]
 use std::path::Path;
 
 pub mod stats;
 pub mod methods;
+#[cfg(feature = "calibration")]
 pub mod inference;
 
+#[cfg(feature = "calibration")]
 pub use inference::ActivationEstimator;
 
 /// A collection of FP32 calibration samples used for range estimation.
@@ -39,11 +41,16 @@ impl CalibrationDataset {
     ///
     /// The array must be at least 2-dimensional `[batch, ...]`.
     ///
+    /// Requires the `calibration` feature (enabled by default).
+    ///
     /// # Errors
     ///
     /// Returns [`QuantizeError::Calibration`] if the file is missing, not `.npy`,
     /// or has an invalid shape.
+    #[cfg(feature = "calibration")]
     pub fn from_numpy(path: impl AsRef<Path>) -> Result<Self> {
+        use ndarray::{Array, IxDyn};
+
         let path = path.as_ref();
 
         if !path.exists() {
@@ -66,19 +73,19 @@ impl CalibrationDataset {
         if shape.len() < 2 {
             return Err(QuantizeError::Calibration { reason: format!("Calibration data must be at least 2-dimensional (batch, ...). Got shape {:?}", shape) });
         }
-        
+
         let num_samples = shape[0];
         let sample_size: usize = shape[1..].iter().product();
-        
+
         let data = array.into_raw_vec();
         let mut samples = Vec::with_capacity(num_samples);
-        
+
         for i in 0..num_samples {
             let start = i * sample_size;
             let end = start + sample_size;
             samples.push(data[start..end].to_vec());
         }
-        
+
         Ok(Self {
             samples,
             shape: shape[1..].to_vec(),

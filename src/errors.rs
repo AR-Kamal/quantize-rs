@@ -62,9 +62,6 @@ pub enum QuantizeError {
         /// What went wrong.
         reason: String,
     },
-
-    /// Catch-all for rare edge cases that don't fit other variants.
-    Other(String),
 }
 
 impl fmt::Display for QuantizeError {
@@ -90,9 +87,6 @@ impl fmt::Display for QuantizeError {
             }
             QuantizeError::Config { reason } => {
                 write!(f, "config error: {reason}")
-            }
-            QuantizeError::Other(msg) => {
-                write!(f, "{msg}")
             }
         }
     }

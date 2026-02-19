@@ -27,10 +27,10 @@ use crate::calibration::CalibrationDataset;
 /// Usage:
 /// ```ignore
 /// let model = OnnxModel::load("model.onnx")?;
-/// let mut estimator = ActivationEstimator::new(model)?;
+/// let mut estimator = ActivationEstimator::new(model, "model.onnx")?;
 /// let dataset = CalibrationDataset::from_numpy("samples.npy")?;
 /// estimator.calibrate(&dataset)?;
-/// let stats = estimator.get_layer_stats();  // HashMap<layer_name, ActivationStats>
+/// let stats = estimator.get_layer_stats();  // HashMap<layer_name, &ActivationStats>
 /// ```
 pub struct ActivationEstimator {
     /// Original ONNX model (preserved for later use in quantization)

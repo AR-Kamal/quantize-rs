@@ -7,11 +7,13 @@
 //!   - model_info() — get model metadata
 
 use pyo3::prelude::*;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
 use crate::onnx_utils::OnnxModel;
 use crate::onnx_utils::graph_builder::QdqWeightInput;
 use crate::quantization::{QuantConfig, Quantizer};
+use rayon::prelude::*;
+#[cfg(feature = "calibration")]
 use crate::calibration::{CalibrationDataset, ActivationEstimator, methods::CalibrationMethod};
 
 // ===========================================================================
@@ -45,18 +47,30 @@ struct ModelInfo {
 ///     output_path: Path to save quantized model
 ///     bits: Bit width (4 or 8)
 ///     per_channel: Enable per-channel quantization
+///     excluded_layers: Layer names to skip (exact match on initializer name)
+///     min_elements: Skip tensors with fewer elements than this (0 = no minimum)
+///     layer_bits: Per-layer bit-width overrides, e.g. {"conv1.weight": 4}
 ///
 /// Example:
 ///     >>> import quantize_rs
 ///     >>> quantize_rs.quantize("model.onnx", "model_int8.onnx", bits=8)
+///     >>> quantize_rs.quantize("model.onnx", "out.onnx", bits=8,
+///     ...     excluded_layers=["head.weight"], min_elements=128)
 #[pyfunction]
-#[pyo3(signature = (input_path, output_path, bits=8, per_channel=false))]
+#[pyo3(signature = (input_path, output_path, bits=8, per_channel=false, excluded_layers=None, min_elements=0, layer_bits=None))]
 fn quantize(
     input_path: &str,
     output_path: &str,
     bits: u8,
     per_channel: bool,
+    excluded_layers: Option<Vec<String>>,
+    min_elements: usize,
+    layer_bits: Option<std::collections::HashMap<String, u8>>,
 ) -> PyResult<()> {
+    if bits != 4 && bits != 8 {
+        return Err(PyValueError::new_err(format!("bits must be 4 or 8, got {}", bits)));
+    }
+
     // Load model
     let mut model = OnnxModel::load(input_path)
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to load model: {}", e)))?;
@@ -72,27 +86,39 @@ fn quantize(
         bits,
         per_channel,
         calibration_method: None,
+        excluded_layers: excluded_layers.unwrap_or_default(),
+        min_elements,
+        layer_bits: layer_bits.unwrap_or_default(),
     };
-    let quantizer = Quantizer::new(config);
 
-    let mut quantized_data = Vec::new();
-    for weight in &weights {
-        let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())
-            .map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
+    let to_quantize: Vec<_> = weights.iter()
+        .filter(|w| config.should_quantize(&w.name, w.data.len()))
+        .collect();
 
-        let (scales, zero_points) = quantized.get_all_scales_zero_points();
-        let is_pc = quantized.is_per_channel();
-        let bits_used = quantized.bits();
+    let quantized_data: Vec<QdqWeightInput> = to_quantize.par_iter()
+        .map(|weight| {
+            let layer_config = QuantConfig {
+                bits: config.bits_for_layer(&weight.name),
+                ..config.clone()
+            };
+            let quantizer = Quantizer::new(layer_config);
+            let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())
+                .map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
 
-        quantized_data.push(QdqWeightInput {
-            original_name:    weight.name.clone(),
-            quantized_values: quantized.data(),
-            scales,
-            zero_points,
-            bits:             bits_used,
-            axis:             if is_pc { Some(0) } else { None },
-        });
-    }
+            let (scales, zero_points) = quantized.get_all_scales_zero_points();
+            let is_pc = quantized.is_per_channel();
+            let bits_used = quantized.bits();
+
+            Ok(QdqWeightInput {
+                original_name:    weight.name.clone(),
+                quantized_values: quantized.data(),
+                scales,
+                zero_points,
+                bits:             bits_used,
+                axis:             if is_pc { Some(0) } else { None },
+            })
+        })
+        .collect::<PyResult<Vec<_>>>()?;
 
     // Save
     model.save_quantized(&quantized_data, output_path)
@@ -121,6 +147,7 @@ fn quantize(
 ///     ...     calibration_data="samples.npy",
 ///     ...     method="minmax"
 ///     ... )
+#[cfg(feature = "calibration")]
 #[pyfunction]
 #[pyo3(signature = (
     input_path,
@@ -142,6 +169,10 @@ fn quantize_with_calibration(
     num_samples: usize,
     sample_shape: Option<Vec<usize>>,
 ) -> PyResult<()> {
+    if bits != 4 && bits != 8 {
+        return Err(PyValueError::new_err(format!("bits must be 4 or 8, got {}", bits)));
+    }
+
     // Parse calibration method
     let calib_method: CalibrationMethod = method.parse()
         .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))?;
@@ -202,6 +233,7 @@ fn quantize_with_calibration(
         bits,
         per_channel,
         calibration_method: Some(calib_method),
+        ..Default::default()
     };
     let quantizer = Quantizer::with_calibration(config, activation_stats);
 
@@ -270,6 +302,7 @@ fn model_info(input_path: &str) -> PyResult<ModelInfo> {
 #[pymodule]
 fn quantize_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(quantize, m)?)?;
+    #[cfg(feature = "calibration")]
     m.add_function(wrap_pyfunction!(quantize_with_calibration, m)?)?;
     m.add_function(wrap_pyfunction!(model_info, m)?)?;
     m.add_class::<ModelInfo>()?;
