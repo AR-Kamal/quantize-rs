@@ -74,6 +74,7 @@ path = "src/main.rs"
 [lib]
 name = "quantize_rs"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [[example]]
 name = "basic_quantization"
