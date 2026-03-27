@@ -14,11 +14,8 @@
 //!     --output resnet18_int8_calibrated.onnx
 
 use anyhow::Result;
-use quantize_rs::{
-    OnnxModel, Quantizer, QuantConfig,
-    CalibrationDataset, ActivationEstimator,
-};
 use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
+use quantize_rs::{ActivationEstimator, CalibrationDataset, OnnxModel, QuantConfig, Quantizer};
 use std::env;
 
 fn main() -> Result<()> {
@@ -26,18 +23,21 @@ fn main() -> Result<()> {
 
     // --- Parse arguments ---
     let model_path = get_arg(&args, "--model").unwrap_or_else(|| "resnet18-v1-7.onnx".to_string());
-    let calib_path = get_arg(&args, "--calibration-data").unwrap_or_else(|| "calibration_samples.npy".to_string());
-    let output_path = get_arg(&args, "--output").unwrap_or_else(|| "model_int8_calibrated.onnx".to_string());
+    let calib_path = get_arg(&args, "--calibration-data")
+        .unwrap_or_else(|| "calibration_samples.npy".to_string());
+    let output_path =
+        get_arg(&args, "--output").unwrap_or_else(|| "model_int8_calibrated.onnx".to_string());
     let bits: u8 = get_arg(&args, "--bits")
         .and_then(|s| s.parse().ok())
         .unwrap_or(8);
     let per_channel = args.contains(&"--per-channel".to_string());
-    
+
     // Parse custom shape (e.g., --shape "1,28,28" for MNIST)
-    let custom_shape: Option<Vec<usize>> = get_arg(&args, "--shape")
-        .map(|s| s.split(',')
+    let custom_shape: Option<Vec<usize>> = get_arg(&args, "--shape").map(|s| {
+        s.split(',')
             .filter_map(|dim| dim.trim().parse().ok())
-            .collect());
+            .collect()
+    });
 
     println!("Activation-Based Calibration Pipeline");
     println!("======================================");
@@ -65,7 +65,7 @@ fn main() -> Result<()> {
         CalibrationDataset::from_numpy(&calib_path)?
     } else {
         println!("  ⚠ File not found, generating random samples");
-        
+
         // Use custom shape if provided, otherwise auto-detect from model
         let input_shape = if let Some(shape) = custom_shape {
             println!("  Using custom shape: {:?}", shape);
@@ -79,7 +79,7 @@ fn main() -> Result<()> {
                         .split(',')
                         .filter_map(|s| s.trim().parse().ok())
                         .collect();
-                    
+
                     // Skip batch dimension (first dim), use remaining dims
                     if dims.len() >= 2 {
                         let detected = dims[1..].to_vec();
@@ -99,7 +99,7 @@ fn main() -> Result<()> {
             println!("  Using ImageNet default shape");
             vec![3, 224, 224]
         };
-        
+
         CalibrationDataset::random(input_shape, 100, (0.0, 1.0))?
     };
     println!("  Samples: {}", dataset.len());
@@ -108,11 +108,15 @@ fn main() -> Result<()> {
 
     // --- Step 3: Run activation-based calibration ---
     println!("[3/5] Running activation-based calibration...");
-    println!("  This runs {} real inference passes to collect activation ranges.", dataset.len());
+    println!(
+        "  This runs {} real inference passes to collect activation ranges.",
+        dataset.len()
+    );
     let mut estimator = ActivationEstimator::new(model, &model_path)?;
     estimator.calibrate(&dataset)?;
     let activation_stats: std::collections::HashMap<String, quantize_rs::ActivationStats> =
-        estimator.get_layer_stats()
+        estimator
+            .get_layer_stats()
             .into_iter()
             .map(|(k, v)| (k, v.clone()))
             .collect();
@@ -169,8 +173,14 @@ fn main() -> Result<()> {
 
     println!("Summary");
     println!("=======");
-    println!("Original size:  {:.2} MB", original_size as f64 / 1_048_576.0);
-    println!("Quantized size: {:.2} MB", quantized_size as f64 / 1_048_576.0);
+    println!(
+        "Original size:  {:.2} MB",
+        original_size as f64 / 1_048_576.0
+    );
+    println!(
+        "Quantized size: {:.2} MB",
+        quantized_size as f64 / 1_048_576.0
+    );
     println!("Compression:    {:.2}×", compression_ratio);
     println!();
     println!("✓ Activation-based calibration complete!");

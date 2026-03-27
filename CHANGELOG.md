@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-03-28
+
+### Fixed
+
+- **NaN undefined behaviour**: `QuantParams::from_range()` now guards against NaN before the `as i8` cast. Previously, NaN from degenerate inputs (e.g., all-zero tensors with `min == max`) caused undefined behaviour on the integer cast.
+- **Constant-value tensor quantization**: Changed the `(min ± 0.01)` hack to a symmetric range `(-|v|, +|v|)`, producing accurate dequantization for constant tensors instead of the previous off-by-0.01 error.
+- **`chunks_exact(4)` panic**: `extract_weights()` now validates that `raw_data.len() % 4 == 0` before chunking, skipping misaligned initializers instead of panicking.
+- **Calibration NaN/Inf poisoning**: `ActivationStats::update()` now filters non-finite values before computing statistics, preventing backwards-infinity min/max bounds.
+- **MSE calibration clamp**: MSE error computation now clamps the quantized value to `[0, 255]` before computing the error, fixing incorrect range optimization.
+- **Opset bump breaks old models**: `ensure_opset_version()` previously bumped all models to opset 13 without upgrading deprecated op attributes. Now:
+  - Only bumps to minimum needed opset (10 for per-tensor, 13 for per-channel DequantizeLinear).
+  - Strips `BatchNormalization.spatial` attribute when bumping past opset 9.
+  - Migrates `Dropout.ratio` from attribute to input when bumping past opset 12.
+  - Adds explicit `axis=1` to `Softmax`/`LogSoftmax` nodes when bumping past opset 13 (default changed from 1 to -1).
+- **All-weights-excluded silent no-op**: CLI `quantize` now warns when all tensors are excluded instead of silently producing an unchanged model.
+- **Empty `layer_bits` key**: Config validation now rejects empty strings as layer names in `layer_bits`.
+- **Range calculation deduplication**: Extracted `finite_min_max()` helper, eliminating duplicated min/max computation in the calibrated quantization path.
+- **`cargo fmt`**: Fixed pre-existing formatting issues across the entire codebase.
+
+### Added
+
+- **CI pipeline** (`.github/workflows/ci.yml`): 4 jobs — test matrix (Ubuntu/Windows/macOS), clippy (`-D warnings`), `cargo fmt --check`, benchmarks compile check.
+- **Real-world model validation** (`eval/validate_models.py`): Downloads ONNX models (ResNet-18, MobileNetV2, SqueezeNet), quantizes with quantize-rs CLI, loads in ONNX Runtime, compares FP32 vs quantized outputs (cosine similarity, max error, top-K match). 6/6 configurations pass.
+- **Opset upgrade engine** in `graph_builder.rs`: `upgrade_deprecated_ops()` handles breaking attribute changes across opset boundaries (BatchNormalization, Dropout, Softmax).
+- 5 new calibration integration tests: `test_calibrated_quantization_uses_stats`, `test_calibrated_quantization_with_method`, `test_calibrated_quantization_fallback_no_stats`, `test_calibrated_quantization_int4`, `test_calibrated_full_pipeline`.
+- 2 new opset upgrade unit tests: `test_ensure_opset_strips_deprecated_attrs`, `test_ensure_opset_no_downgrade`.
+- 1 new config validation unit test: `test_empty_layer_bits_key_rejected`.
+- Total test count: 106 passing (71 unit + 18 integration + 17 property-based), 5 ignored.
+
+### Changed
+
+- `save_quantized()` now computes minimum required opset (10 for per-tensor, 13 for per-channel) instead of always bumping to 13.
+
 ## [0.6.0] - 2026-02-19
 
 ### Added

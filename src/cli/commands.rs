@@ -3,13 +3,15 @@ use quantize_rs::config::Config;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use std::path::{Path, PathBuf};
-use rayon::prelude::*;
-use quantize_rs::onnx_utils::OnnxModel;
-use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
-use quantize_rs::quantization::{QuantConfig, Quantizer};
 #[cfg(feature = "calibration")]
-use quantize_rs::calibration::{CalibrationDataset, ActivationEstimator, methods::CalibrationMethod};
+use quantize_rs::calibration::{
+    methods::CalibrationMethod, ActivationEstimator, CalibrationDataset,
+};
+use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
+use quantize_rs::onnx_utils::OnnxModel;
+use quantize_rs::quantization::{QuantConfig, Quantizer};
+use rayon::prelude::*;
+use std::path::{Path, PathBuf};
 
 pub fn quantize(
     input: &str,
@@ -46,9 +48,15 @@ pub fn quantize(
     println!();
 
     if !layer_bits.is_empty() {
-        println!("Quantizing (mixed precision, default INT{}){}...",
-                 bits, if per_channel { " per-channel" } else { "" });
-        println!("  Layer overrides: {} layer(s) with custom bit-width", layer_bits.len());
+        println!(
+            "Quantizing (mixed precision, default INT{}){}...",
+            bits,
+            if per_channel { " per-channel" } else { "" }
+        );
+        println!(
+            "  Layer overrides: {} layer(s) with custom bit-width",
+            layer_bits.len()
+        );
     } else if per_channel {
         println!("Quantizing to INT{} (per-channel)...", bits);
     } else {
@@ -72,16 +80,30 @@ pub fn quantize(
     };
 
     // Filter weights according to per-layer policy, then quantize in parallel.
-    let to_quantize: Vec<_> = weights.iter()
+    let to_quantize: Vec<_> = weights
+        .iter()
         .filter(|w| config.should_quantize(&w.name, w.num_elements()))
         .collect();
 
     let skipped = weights.len() - to_quantize.len();
     if skipped > 0 {
-        println!("  Skipping {} layer(s) (excluded or below min-elements threshold)", skipped);
+        println!(
+            "  Skipping {} layer(s) (excluded or below min-elements threshold)",
+            skipped
+        );
     }
 
-    let results: Vec<_> = to_quantize.par_iter()
+    if to_quantize.is_empty() {
+        println!(
+            "{}",
+            "⚠  All weight tensors were excluded — no quantization performed.".yellow()
+        );
+        println!("  Check --exclude, --min-elements, and layer_bits settings.");
+        return Ok(());
+    }
+
+    let results: Vec<_> = to_quantize
+        .par_iter()
         .map(|weight| {
             let layer_bits = config.bits_for_layer(&weight.name);
             let layer_config = QuantConfig {
@@ -98,12 +120,12 @@ pub fn quantize(
             let size = quantized.size_bytes();
 
             let qdq = QdqWeightInput {
-                original_name:    weight.name.clone(),
+                original_name: weight.name.clone(),
                 quantized_values: quantized.data(),
                 scales,
                 zero_points,
-                bits:             bits_used,
-                axis:             if is_per_channel { Some(0) } else { None },
+                bits: bits_used,
+                axis: if is_per_channel { Some(0) } else { None },
             };
 
             Ok::<_, anyhow::Error>((qdq, error, size))
@@ -219,8 +241,11 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     let (quantized_weight_count, quantized_size) = if is_qdq {
         let count = quantized_weight_info.len();
         // Each quantized element is 1 byte (INT8 storage)
-        let size: usize = quantized_weight_info.iter().map(|w| w.original_length).sum();
-        (count, size)  // size in bytes (INT8 = 1 byte per element)
+        let size: usize = quantized_weight_info
+            .iter()
+            .map(|w| w.original_length)
+            .sum();
+        (count, size) // size in bytes (INT8 = 1 byte per element)
     } else {
         let weights = quantized_model.extract_weights();
         let size: usize = weights.iter().map(|w| w.size_bytes()).sum();
@@ -281,8 +306,9 @@ pub fn benchmark(original: &str, quantized: &str) -> Result<()> {
     );
 
     let file_compression = original_file_size as f64 / quantized_file_size.max(1) as f64;
-    let size_reduction =
-        (original_file_size as f64 - quantized_file_size as f64) / original_file_size.max(1) as f64 * 100.0;
+    let size_reduction = (original_file_size as f64 - quantized_file_size as f64)
+        / original_file_size.max(1) as f64
+        * 100.0;
 
     println!("  Reduction:   {:.1}%", size_reduction);
     println!("  Ratio:       {:.2}x", file_compression);
@@ -335,13 +361,13 @@ pub fn calibrate(
     println!("{}", "Calibration-Based Quantization".bold());
     println!("{}", "=".repeat(60));
     println!();
-    
+
     // Parse calibration method
     let method: CalibrationMethod = method_str.parse()?;
 
     println!("Method: {}", format!("{}", method).cyan());
     println!();
-    
+
     // Load model first so we can auto-detect shape
     println!("Loading model: {}", input_path);
     let model = OnnxModel::load(input_path)?;
@@ -353,9 +379,13 @@ pub fn calibrate(
     } else {
         // Generate random data for testing
         println!("⚠  No .npy file provided, using random data for demo");
-        let input_shape = model.input_shapes().into_iter().next()
+        let input_shape = model
+            .input_shapes()
+            .into_iter()
+            .next()
             .and_then(|dims| {
-                let shape: Vec<usize> = dims.into_iter()
+                let shape: Vec<usize> = dims
+                    .into_iter()
                     .filter_map(|d| if d > 0 { Some(d as usize) } else { None })
                     .collect();
                 // Skip batch dimension if present
@@ -376,26 +406,27 @@ pub fn calibrate(
     println!();
     println!("✓ Model loaded");
     println!();
-    
+
     // Run calibration
     println!("Running calibration...");
     let mut estimator = ActivationEstimator::new(model, input_path)?;
     estimator.calibrate(&dataset)?;
     println!();
-    
+
     // Get calibration statistics
-    let calib_stats = estimator.get_layer_stats()
+    let calib_stats = estimator
+        .get_layer_stats()
         .into_iter()
         .map(|(k, v)| (k, v.clone()))
         .collect();
-    
+
     // Extract weights
     println!("Extracting weights...");
     let mut model = estimator.into_model();
     let weights = model.extract_weights();
     println!("✓ Found {} weight tensors", weights.len());
     println!();
-    
+
     // Quantize with calibration
     println!("Quantizing with calibration...");
     let config = QuantConfig {
@@ -406,7 +437,8 @@ pub fn calibrate(
     };
     let quantizer = Quantizer::with_calibration(config, calib_stats);
 
-    let results: Vec<_> = weights.par_iter()
+    let results: Vec<_> = weights
+        .par_iter()
         .map(|weight| {
             let quantized = quantizer.quantize_tensor_with_name(
                 &weight.name,
@@ -420,12 +452,12 @@ pub fn calibrate(
             let bits_used = quantized.bits();
 
             let qdq = QdqWeightInput {
-                original_name:    weight.name.clone(),
+                original_name: weight.name.clone(),
                 quantized_values: quantized.data(),
                 scales,
                 zero_points,
-                bits:             bits_used,
-                axis:             if is_per_channel { Some(0) } else { None },
+                bits: bits_used,
+                axis: if is_per_channel { Some(0) } else { None },
             };
 
             Ok::<_, anyhow::Error>((qdq, error))
@@ -439,18 +471,22 @@ pub fn calibrate(
         quantized_data.push(qdq);
     }
 
-    let avg_error = if weights.is_empty() { 0.0 } else { total_error / weights.len() as f32 };
-    
+    let avg_error = if weights.is_empty() {
+        0.0
+    } else {
+        total_error / weights.len() as f32
+    };
+
     println!();
     println!("Results:");
     println!("  Avg MSE error: {:.8}", avg_error);
     println!();
-    
+
     // Save
     println!("Saving calibrated model...");
     model.save_quantized(&quantized_data, output_path)?;
     println!("✓ Saved to: {}", output_path.green());
-    
+
     Ok(())
 }
 
@@ -458,20 +494,19 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     println!("{}", "Validating Quantized Model".bold());
     println!("{}", "=".repeat(60));
     println!();
-    
+
     println!("Original:  {}", original_path.cyan());
     println!("Quantized: {}", quantized_path.yellow());
     println!();
-    
+
     println!("Loading models...");
-    let original_model = OnnxModel::load(original_path)
-        .context("Failed to load original model")?;
-    let quantized_model = OnnxModel::load(quantized_path)
-        .context("Failed to load quantized model")?;
-    
+    let original_model = OnnxModel::load(original_path).context("Failed to load original model")?;
+    let quantized_model =
+        OnnxModel::load(quantized_path).context("Failed to load quantized model")?;
+
     println!("✓ Both models loaded successfully");
     println!();
-    
+
     println!("{}", "Structure Validation".bold());
     println!("{}", "-".repeat(60));
 
@@ -489,18 +524,23 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     if is_qdq {
         let expected_nodes = original_info.num_nodes + num_dq_nodes;
         if quantized_info.num_nodes == expected_nodes {
-            println!("✓ Node count: {} ({} original + {} DequantizeLinear)",
-                     quantized_info.num_nodes, original_info.num_nodes, num_dq_nodes);
+            println!(
+                "✓ Node count: {} ({} original + {} DequantizeLinear)",
+                quantized_info.num_nodes, original_info.num_nodes, num_dq_nodes
+            );
         } else {
-            println!("⚠  Node count: {} (expected {} = {} + {} DQ nodes)",
-                     quantized_info.num_nodes, expected_nodes,
-                     original_info.num_nodes, num_dq_nodes);
+            println!(
+                "⚠  Node count: {} (expected {} = {} + {} DQ nodes)",
+                quantized_info.num_nodes, expected_nodes, original_info.num_nodes, num_dq_nodes
+            );
         }
     } else if original_info.num_nodes == quantized_info.num_nodes {
         println!("✓ Node count matches: {}", original_info.num_nodes);
     } else {
-        println!("✗ Node count mismatch: {} vs {}",
-                 original_info.num_nodes, quantized_info.num_nodes);
+        println!(
+            "✗ Node count mismatch: {} vs {}",
+            original_info.num_nodes, quantized_info.num_nodes
+        );
         validation_passed = false;
     }
 
@@ -508,25 +548,36 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
     if is_qdq {
         let expected_inputs = original_info.inputs.len().saturating_sub(num_dq_nodes);
         if quantized_info.inputs.len() >= expected_inputs {
-            println!("✓ Input count: {} (weight inputs removed for QDQ)",
-                     quantized_info.inputs.len());
+            println!(
+                "✓ Input count: {} (weight inputs removed for QDQ)",
+                quantized_info.inputs.len()
+            );
         } else {
-            println!("⚠  Input count: {} (expected >= {})",
-                     quantized_info.inputs.len(), expected_inputs);
+            println!(
+                "⚠  Input count: {} (expected >= {})",
+                quantized_info.inputs.len(),
+                expected_inputs
+            );
         }
     } else if original_info.inputs.len() == quantized_info.inputs.len() {
         println!("✓ Input count matches: {}", original_info.inputs.len());
     } else {
-        println!("✗ Input count mismatch: {} vs {}",
-                 original_info.inputs.len(), quantized_info.inputs.len());
+        println!(
+            "✗ Input count mismatch: {} vs {}",
+            original_info.inputs.len(),
+            quantized_info.inputs.len()
+        );
         validation_passed = false;
     }
 
     if original_info.outputs.len() == quantized_info.outputs.len() {
         println!("✓ Output count matches: {}", original_info.outputs.len());
     } else {
-        println!("✗ Output count mismatch: {} vs {}",
-                 original_info.outputs.len(), quantized_info.outputs.len());
+        println!(
+            "✗ Output count mismatch: {} vs {}",
+            original_info.outputs.len(),
+            quantized_info.outputs.len()
+        );
         validation_passed = false;
     }
 
@@ -550,15 +601,25 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
 
     if is_qdq {
         // For QDQ models, use load_quantized_info which understands the QDQ format
-        println!("✓ QDQ format detected: {} quantized weight tensors", quantized_weight_info.len());
+        println!(
+            "✓ QDQ format detected: {} quantized weight tensors",
+            quantized_weight_info.len()
+        );
 
         if original_weights.len() == quantized_weight_info.len() {
-            println!("✓ All {} original weights have quantized counterparts",
-                     original_weights.len());
+            println!(
+                "✓ All {} original weights have quantized counterparts",
+                original_weights.len()
+            );
         } else {
-            println!("⚠  {} original weights, {} quantized ({} unquantized)",
-                     original_weights.len(), quantized_weight_info.len(),
-                     original_weights.len().saturating_sub(quantized_weight_info.len()));
+            println!(
+                "⚠  {} original weights, {} quantized ({} unquantized)",
+                original_weights.len(),
+                quantized_weight_info.len(),
+                original_weights
+                    .len()
+                    .saturating_sub(quantized_weight_info.len())
+            );
         }
 
         // Check scale/zero-point sanity
@@ -584,8 +645,11 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
         if original_weights.len() == quantized_weights.len() {
             println!("✓ Weight tensor count matches: {}", original_weights.len());
         } else {
-            println!("⚠  Weight tensor count differs: {} vs {}",
-                     original_weights.len(), quantized_weights.len());
+            println!(
+                "⚠  Weight tensor count differs: {} vs {}",
+                original_weights.len(),
+                quantized_weights.len()
+            );
         }
 
         let mut shape_mismatches = 0;
@@ -593,43 +657,51 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
             if orig.shape != quant.shape {
                 shape_mismatches += 1;
                 if detailed {
-                    println!("⚠  Shape mismatch in '{}': {:?} vs {:?}",
-                             orig.name, orig.shape, quant.shape);
+                    println!(
+                        "⚠  Shape mismatch in '{}': {:?} vs {:?}",
+                        orig.name, orig.shape, quant.shape
+                    );
                 }
             }
         }
         if shape_mismatches == 0 {
             println!("✓ All weight shapes match");
         } else {
-            println!("⚠  {} weight tensors have shape mismatches", shape_mismatches);
+            println!(
+                "⚠  {} weight tensors have shape mismatches",
+                shape_mismatches
+            );
             validation_passed = false;
         }
     }
-    
+
     println!();
-    
+
     println!("{}", "Size Analysis".bold());
     println!("{}", "-".repeat(60));
-    
+
     let original_size = std::fs::metadata(original_path)?.len();
     let quantized_size = std::fs::metadata(quantized_path)?.len();
     let compression = original_size as f64 / quantized_size.max(1) as f64;
-    let reduction = (original_size as f64 - quantized_size as f64) / original_size.max(1) as f64 * 100.0;
+    let reduction =
+        (original_size as f64 - quantized_size as f64) / original_size.max(1) as f64 * 100.0;
 
     println!("Original:  {:.2} MB", original_size as f64 / 1_048_576.0);
     println!("Quantized: {:.2} MB", quantized_size as f64 / 1_048_576.0);
     println!("Reduction: {:.1}% ({:.2}x smaller)", reduction, compression);
 
     if reduction < 0.0 {
-        println!("⚠  Warning: Quantized model is larger than original (QDQ overhead on small models).");
+        println!(
+            "⚠  Warning: Quantized model is larger than original (QDQ overhead on small models)."
+        );
     } else if compression < 2.0 {
         println!("⚠  Warning: Low compression ratio. Quantization may not be working correctly.");
     } else if (3.5..=4.5).contains(&compression) {
         println!("✓ Expected compression for INT8 quantization");
     }
-    
+
     println!();
-    
+
     if detailed {
         println!("{}", "Detailed Layer Analysis".bold());
         println!("{}", "-".repeat(68));
@@ -637,19 +709,35 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
         // Build a per-layer bit map from QDQ metadata so mixed-precision
         // models show the correct error per layer.
         let layer_bits_map: std::collections::HashMap<String, u8> = if is_qdq {
-            quantized_weight_info.iter().map(|qw| (qw.name.clone(), qw.bits)).collect()
+            quantized_weight_info
+                .iter()
+                .map(|qw| (qw.name.clone(), qw.bits))
+                .collect()
         } else {
             std::collections::HashMap::new()
         };
         let default_bits = layer_bits_map.values().next().copied().unwrap_or(8);
 
-        println!("{:<40} {:>5} {:>12} {:>15}", "Layer", "Bits", "Elements", "MSE Error");
+        println!(
+            "{:<40} {:>5} {:>12} {:>15}",
+            "Layer", "Bits", "Elements", "MSE Error"
+        );
         println!("{}", "-".repeat(75));
 
         for weight in original_weights.iter().take(10) {
-            let weight_bits = layer_bits_map.get(&weight.name).copied().unwrap_or(default_bits);
-            let wconfig = QuantConfig { bits: weight_bits, per_channel: false, calibration_method: None, ..Default::default() };
-            if let Ok(quantized) = Quantizer::new(wconfig).quantize_tensor(&weight.data, weight.shape.clone()) {
+            let weight_bits = layer_bits_map
+                .get(&weight.name)
+                .copied()
+                .unwrap_or(default_bits);
+            let wconfig = QuantConfig {
+                bits: weight_bits,
+                per_channel: false,
+                calibration_method: None,
+                ..Default::default()
+            };
+            if let Ok(quantized) =
+                Quantizer::new(wconfig).quantize_tensor(&weight.data, weight.shape.clone())
+            {
                 let error = quantized.quantization_error(&weight.data);
 
                 let name = if weight.name.len() > 37 {
@@ -658,11 +746,13 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
                     weight.name.clone()
                 };
 
-                println!("{:<40} {:>5} {:>12} {:>15.8}",
-                         name,
-                         weight_bits,
-                         weight.data.len(),
-                         error);
+                println!(
+                    "{:<40} {:>5} {:>12} {:>15.8}",
+                    name,
+                    weight_bits,
+                    weight.data.len(),
+                    error
+                );
             }
         }
 
@@ -672,7 +762,7 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
 
         println!();
     }
-    
+
     println!("{}", "=".repeat(60));
     if validation_passed {
         println!("{}", "✓ VALIDATION PASSED".green().bold());
@@ -685,10 +775,11 @@ pub fn validate(original_path: &str, quantized_path: &str, detailed: bool) -> Re
         println!("Review the warnings above and consider re-quantizing.");
     }
     println!("{}", "=".repeat(60));
-    
+
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn batch(
     inputs: &[String],
     output_dir: &str,
@@ -708,7 +799,11 @@ pub fn batch(
         .with_context(|| format!("Failed to create output directory: {}", output_dir))?;
 
     println!("Output directory: {}", output_dir.cyan());
-    println!("Quantization: INT{}{}", bits, if per_channel { " (per-channel)" } else { "" });
+    println!(
+        "Quantization: INT{}{}",
+        bits,
+        if per_channel { " (per-channel)" } else { "" }
+    );
     println!();
 
     let mut input_files = Vec::new();
@@ -724,8 +819,8 @@ pub fn batch(
                         }
                     }
                 }
-                Err(_) => {
-                    println!("⚠  Invalid pattern or file not found: {}", pattern);
+                Err(e) => {
+                    println!("⚠  Invalid glob pattern '{}': {}", pattern, e);
                 }
             }
         }
@@ -744,16 +839,17 @@ pub fn batch(
 
     for (idx, input_path) in input_files.iter().enumerate() {
         let input_str = input_path.to_string_lossy();
-        let filename = input_path.file_name()
+        let filename = input_path
+            .file_name()
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| input_path.to_string_lossy().to_string());
-        
+
         let output_filename = if let Some(stem) = input_path.file_stem() {
             format!("{}_int{}.onnx", stem.to_string_lossy(), bits)
         } else {
             format!("{}_int{}.onnx", filename, bits)
         };
-        
+
         let output_path = Path::new(output_dir).join(&output_filename);
         let output_str = output_path.to_string_lossy();
 
@@ -767,7 +863,15 @@ pub fn batch(
             continue;
         }
 
-        match quantize(&input_str, &output_str, bits, per_channel, excluded_layers, min_elements, layer_bits) {
+        match quantize(
+            &input_str,
+            &output_str,
+            bits,
+            per_channel,
+            excluded_layers,
+            min_elements,
+            layer_bits,
+        ) {
             Ok(_) => {
                 println!("✓ Success");
                 println!();
@@ -777,7 +881,7 @@ pub fn batch(
                 println!("✗ Failed: {}", e);
                 println!();
                 results.push((input_str.to_string(), format!("Failed: {}", e)));
-                
+
                 if !continue_on_error {
                     println!("✗ Stopping batch processing due to error");
                     println!("   Use --continue-on-error to process remaining models");
@@ -792,13 +896,16 @@ pub fn batch(
     println!("{}", "=".repeat(60));
     println!();
 
-    let success_count = results.iter()
+    let success_count = results
+        .iter()
         .filter(|(_, status)| status.contains("Success"))
         .count();
-    let skipped_count = results.iter()
+    let skipped_count = results
+        .iter()
         .filter(|(_, status)| status.contains("Skipped"))
         .count();
-    let failed_count = results.iter()
+    let failed_count = results
+        .iter()
         .filter(|(_, status)| status.contains("Failed"))
         .count();
 
@@ -825,7 +932,12 @@ pub fn batch(
     if failed_count == 0 {
         println!("{}", "✓ All models processed successfully!".green().bold());
     } else if success_count > 0 {
-        println!("{}", "⚠  Some models failed, but others succeeded".yellow().bold());
+        println!(
+            "{}",
+            "⚠  Some models failed, but others succeeded"
+                .yellow()
+                .bold()
+        );
     } else {
         println!("{}", "✗ All models failed".red().bold());
     }
@@ -839,17 +951,18 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
     println!();
 
     println!("Loading config: {}", config_path.cyan());
-    let config = Config::from_file(config_path)
-        .context("Failed to load configuration file")?;
+    let config = Config::from_file(config_path).context("Failed to load configuration file")?;
 
-    config.validate()
-        .context("Config validation failed")?;
+    config.validate().context("Config validation failed")?;
 
     println!("✓ Config loaded and validated");
     println!();
 
     if dry_run {
-        println!("{}", "DRY RUN MODE - No files will be modified".yellow().bold());
+        println!(
+            "{}",
+            "DRY RUN MODE - No files will be modified".yellow().bold()
+        );
         println!();
     }
 
@@ -861,7 +974,10 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
     let mut total_tasks = 0;
 
     if !config.models.is_empty() {
-        println!("{}", format!("Individual Models: {}", config.models.len()).bold());
+        println!(
+            "{}",
+            format!("Individual Models: {}", config.models.len()).bold()
+        );
         println!("{}", "-".repeat(60));
 
         for (idx, model_config) in config.models.iter().enumerate() {
@@ -895,7 +1011,15 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
                     .with_context(|| format!("Failed to create output directory: {:?}", parent))?;
             }
 
-            match quantize(&model_config.input, &model_config.output, bits, per_channel, &excluded, min_elements, &layer_bits) {
+            match quantize(
+                &model_config.input,
+                &model_config.output,
+                bits,
+                per_channel,
+                &excluded,
+                min_elements,
+                &layer_bits,
+            ) {
                 Ok(_) => {
                     println!("✓ Success");
                     total_tasks += 1;
@@ -920,7 +1044,7 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
             println!("  (dry run)");
         } else {
             let inputs = vec![batch_config.input_dir.clone()];
-            
+
             batch(
                 &inputs,
                 &batch_config.output_dir,

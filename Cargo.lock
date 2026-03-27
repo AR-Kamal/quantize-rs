@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "quantize-rs"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "approx",

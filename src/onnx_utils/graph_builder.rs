@@ -3,18 +3,19 @@
 //! Three responsibilities:
 //!   1. **QDQ transform** — replace FP32 initializers with INT8 + DequantizeLinear
 //!   2. **Connectivity validation** — walk the graph and verify every edge resolves
-//!   3. **Opset management** — ensure the model declares opset ≥ 13
+//!   3. **Opset management** — ensure the model declares a sufficient opset and
+//!      upgrades deprecated op attributes when bumping across breaking opset boundaries
 
 use crate::errors::{QuantizeError, Result};
-use crate::onnx_proto::{GraphProto, ModelProto, OperatorSetIdProto};
+use crate::onnx_proto::{
+    attribute_proto, tensor_proto, AttributeProto, GraphProto, ModelProto, OperatorSetIdProto,
+    TensorProto,
+};
 use std::collections::{HashMap, HashSet};
 
 use super::quantization_nodes::{
-    DequantLinearNames,
-    build_dequantize_linear_node,
-    build_quantized_weight_tensor,
-    build_scale_tensor,
-    build_zero_point_tensor,
+    build_dequantize_linear_node, build_quantized_weight_tensor, build_scale_tensor,
+    build_zero_point_tensor, DequantLinearNames,
 };
 
 // ===========================================================================
@@ -131,23 +132,114 @@ pub fn validate_graph_connectivity(graph: &GraphProto) -> ConnectivityReport {
 /// Ensure the default ONNX domain opset is at least `min_version`.
 ///
 /// DequantizeLinear requires opset ≥ 10 (per-tensor) or ≥ 13 (per-channel axis).
-/// We always request 13 to leave the door open for per-channel.
+///
+/// When bumping the opset past a breaking boundary, this function also
+/// upgrades deprecated op attributes:
+///   - **opset 9**: `BatchNormalization.spatial` removed (was always 1)
+///   - **opset 12**: `Dropout.ratio` migrated from attribute to input
 pub fn ensure_opset_version(model: &mut ModelProto, min_version: i64) {
-    // The default ONNX domain is identified by an empty string
+    let old_version = get_opset_version(model);
+
+    // Update or insert the default-domain opset entry
+    let mut found = false;
     for opset in model.opset_import.iter_mut() {
         if opset.domain.is_empty() {
             if opset.version < min_version {
                 opset.version = min_version;
             }
-            return; // found and updated (or already sufficient)
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        model.opset_import.push(OperatorSetIdProto {
+            domain: String::new(),
+            version: min_version,
+        });
+    }
+
+    // Strip deprecated attributes when crossing breaking opset boundaries
+    if old_version < min_version {
+        if let Some(graph) = model.graph.as_mut() {
+            upgrade_deprecated_ops(graph, old_version, min_version);
+        }
+    }
+}
+
+/// Get the current default-domain opset version (0 if not present).
+fn get_opset_version(model: &ModelProto) -> i64 {
+    model
+        .opset_import
+        .iter()
+        .find(|o| o.domain.is_empty())
+        .map_or(0, |o| o.version)
+}
+
+/// Upgrade graph nodes whose attribute semantics changed between `old_opset`
+/// and `new_opset`.
+///
+/// - **BatchNormalization** (opset 9): `spatial` attribute removed (was always 1)
+/// - **Dropout** (opset 12): `ratio` attribute → 2nd input
+/// - **Softmax / LogSoftmax** (opset 13): default axis changed from 1 to -1
+fn upgrade_deprecated_ops(graph: &mut GraphProto, old_opset: i64, new_opset: i64) {
+    let mut new_initializers: Vec<TensorProto> = Vec::new();
+
+    for node in graph.node.iter_mut() {
+        // Opset 9: BatchNormalization removed the `spatial` attribute.
+        // It was always 1 (the only valid value) and had no effect.
+        if node.op_type == "BatchNormalization" && old_opset < 9 && new_opset >= 9 {
+            node.attribute.retain(|a| a.name != "spatial");
+        }
+
+        // Opset 12: Dropout `ratio` moved from attribute to 2nd input.
+        // Extract the value, remove the attribute, and wire in a constant.
+        if node.op_type == "Dropout" && old_opset < 12 && new_opset >= 12 {
+            let ratio = node
+                .attribute
+                .iter()
+                .find(|a| a.name == "ratio")
+                .map(|a| a.f)
+                .unwrap_or(0.5);
+            node.attribute.retain(|a| a.name != "ratio");
+
+            let init_name = format!(
+                "_quantize_rs_dropout_ratio_{}",
+                node.output.first().map_or("", |s| s.as_str()),
+            );
+            new_initializers.push(TensorProto {
+                name: init_name.clone(),
+                data_type: tensor_proto::DataType::Float as i32,
+                float_data: vec![ratio],
+                ..Default::default()
+            });
+
+            if node.input.len() < 2 {
+                node.input.push(init_name);
+            } else {
+                node.input[1] = init_name;
+            }
+        }
+
+        // Opset 13: Softmax/LogSoftmax default axis changed from 1 to -1.
+        // If the node has no explicit axis attribute, add axis=1 to preserve
+        // the old behavior.
+        if (node.op_type == "Softmax" || node.op_type == "LogSoftmax")
+            && old_opset < 13
+            && new_opset >= 13
+        {
+            let has_axis = node.attribute.iter().any(|a| a.name == "axis");
+            if !has_axis {
+                node.attribute.push(AttributeProto {
+                    name: "axis".to_string(),
+                    r#type: attribute_proto::AttributeType::Int as i32,
+                    i: 1, // old default
+                    ..Default::default()
+                });
+            }
         }
     }
 
-    // No default-domain entry at all — add one
-    model.opset_import.push(OperatorSetIdProto {
-        domain:  String::new(), // "" = standard ONNX domain
-        version: min_version,
-    });
+    graph.initializer.extend(new_initializers);
 }
 
 // ===========================================================================
@@ -182,10 +274,7 @@ pub fn ensure_opset_version(model: &mut ModelProto, min_version: i64) {
 /// is INT4-level (scale and zero_point were computed for the 4-bit range), but
 /// on-disk storage is 4× compression rather than the 8× that bit-packing would
 /// give.  True INT4 packing is planned for a future version (opset 21 or custom op).
-pub fn apply_qdq_transform(
-    graph: &mut GraphProto,
-    inputs: &[QdqWeightInput],
-) -> Result<()> {
+pub fn apply_qdq_transform(graph: &mut GraphProto, inputs: &[QdqWeightInput]) -> Result<()> {
     // -----------------------------------------------------------------------
     // 0.  Snapshot shapes before modifying the initializer list
     // -----------------------------------------------------------------------
@@ -200,7 +289,9 @@ pub fn apply_qdq_transform(
     // -----------------------------------------------------------------------
     // 1.  Remove the original FP32 initializers for every weight we're replacing
     // -----------------------------------------------------------------------
-    graph.initializer.retain(|init| !quant_set.contains(init.name.as_str()));
+    graph
+        .initializer
+        .retain(|init| !quant_set.contains(init.name.as_str()));
 
     // -----------------------------------------------------------------------
     // 1b. Also remove weights from graph.input (critical fix for "Duplicate definition")
@@ -208,7 +299,9 @@ pub fn apply_qdq_transform(
     // Some ONNX models list weights as both initializers AND graph inputs.
     // This is valid ONNX, but when DequantizeLinear outputs reuse the original
     // weight names, ONNX Runtime sees two definitions of the same tensor.
-    graph.input.retain(|inp| !quant_set.contains(inp.name.as_str()));
+    graph
+        .input
+        .retain(|inp| !quant_set.contains(inp.name.as_str()));
 
     // -----------------------------------------------------------------------
     // 2.  Add quantized initializer triples + build DequantizeLinear nodes
@@ -216,39 +309,43 @@ pub fn apply_qdq_transform(
     let mut dq_nodes = Vec::new();
 
     for inp in inputs {
-        let shape = shape_map
-            .get(&inp.original_name)
-            .ok_or_else(|| {
-                QuantizeError::GraphTransform {
+        let shape =
+            shape_map
+                .get(&inp.original_name)
+                .ok_or_else(|| QuantizeError::GraphTransform {
                     reason: format!(
                         "Weight '{}' not found in model initializers — \
                          verify the name matches exactly",
                         inp.original_name
                     ),
-                }
-            })?;
+                })?;
 
         let expected_len: i64 = shape.iter().product();
         if inp.quantized_values.len() as i64 != expected_len {
             return Err(QuantizeError::GraphTransform {
                 reason: format!(
                     "Weight '{}': quantized_values has {} elements but shape {:?} expects {}",
-                    inp.original_name, inp.quantized_values.len(), shape, expected_len
+                    inp.original_name,
+                    inp.quantized_values.len(),
+                    shape,
+                    expected_len
                 ),
             });
         }
 
         let names = DequantLinearNames::from_original(&inp.original_name);
 
-        graph.initializer.push(
-            build_quantized_weight_tensor(&names, &inp.quantized_values, shape),
-        );
-        graph.initializer.push(
-            build_scale_tensor(&names, &inp.scales),
-        );
-        graph.initializer.push(
-            build_zero_point_tensor(&names, &inp.zero_points),
-        );
+        graph.initializer.push(build_quantized_weight_tensor(
+            &names,
+            &inp.quantized_values,
+            shape,
+        ));
+        graph
+            .initializer
+            .push(build_scale_tensor(&names, &inp.scales));
+        graph
+            .initializer
+            .push(build_zero_point_tensor(&names, &inp.zero_points));
 
         dq_nodes.push(build_dequantize_linear_node(&names, inp.axis));
     }
@@ -273,8 +370,8 @@ pub fn apply_qdq_transform(
 mod tests {
     use super::*;
     use crate::onnx_proto::{
-        GraphProto, ModelProto, NodeProto, OperatorSetIdProto,
-        TensorProto, ValueInfoProto, tensor_proto,
+        tensor_proto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorProto,
+        ValueInfoProto,
     };
 
     // -----------------------------------------------------------------------
@@ -285,19 +382,22 @@ mod tests {
     /// one Conv node consuming both, producing "out".
     fn make_simple_graph() -> GraphProto {
         GraphProto {
-            input: vec![ValueInfoProto { name: "input".to_string(), ..Default::default() }],
+            input: vec![ValueInfoProto {
+                name: "input".to_string(),
+                ..Default::default()
+            }],
             initializer: vec![TensorProto {
-                name:       "w".to_string(),
-                data_type:  tensor_proto::DataType::Float as i32,
-                dims:       vec![2, 2],
+                name: "w".to_string(),
+                data_type: tensor_proto::DataType::Float as i32,
+                dims: vec![2, 2],
                 float_data: vec![1.0, 2.0, 3.0, 4.0],
                 ..Default::default()
             }],
             node: vec![NodeProto {
                 op_type: "Conv".to_string(),
-                name:    "conv0".to_string(),
-                input:   vec!["input".to_string(), "w".to_string()],
-                output:  vec!["out".to_string()],
+                name: "conv0".to_string(),
+                input: vec!["input".to_string(), "w".to_string()],
+                output: vec!["out".to_string()],
                 ..Default::default()
             }],
             ..Default::default()
@@ -307,19 +407,22 @@ mod tests {
     /// Two-weight graph: "w1" and "w2", two Conv nodes chained.
     fn make_two_weight_graph() -> GraphProto {
         GraphProto {
-            input: vec![ValueInfoProto { name: "input".to_string(), ..Default::default() }],
+            input: vec![ValueInfoProto {
+                name: "input".to_string(),
+                ..Default::default()
+            }],
             initializer: vec![
                 TensorProto {
-                    name:       "w1".to_string(),
-                    data_type:  tensor_proto::DataType::Float as i32,
-                    dims:       vec![2, 2],
+                    name: "w1".to_string(),
+                    data_type: tensor_proto::DataType::Float as i32,
+                    dims: vec![2, 2],
                     float_data: vec![1.0, 2.0, 3.0, 4.0],
                     ..Default::default()
                 },
                 TensorProto {
-                    name:       "w2".to_string(),
-                    data_type:  tensor_proto::DataType::Float as i32,
-                    dims:       vec![2, 2],
+                    name: "w2".to_string(),
+                    data_type: tensor_proto::DataType::Float as i32,
+                    dims: vec![2, 2],
                     float_data: vec![5.0, 6.0, 7.0, 8.0],
                     ..Default::default()
                 },
@@ -327,16 +430,16 @@ mod tests {
             node: vec![
                 NodeProto {
                     op_type: "Conv".to_string(),
-                    name:    "conv1".to_string(),
-                    input:   vec!["input".to_string(), "w1".to_string()],
-                    output:  vec!["mid".to_string()],
+                    name: "conv1".to_string(),
+                    input: vec!["input".to_string(), "w1".to_string()],
+                    output: vec!["mid".to_string()],
                     ..Default::default()
                 },
                 NodeProto {
                     op_type: "Conv".to_string(),
-                    name:    "conv2".to_string(),
-                    input:   vec!["mid".to_string(), "w2".to_string()],
-                    output:  vec!["out".to_string()],
+                    name: "conv2".to_string(),
+                    input: vec!["mid".to_string(), "w2".to_string()],
+                    output: vec!["out".to_string()],
                     ..Default::default()
                 },
             ],
@@ -350,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_connectivity_passes_on_valid_graph() {
-        let graph  = make_simple_graph();
+        let graph = make_simple_graph();
         let report = validate_graph_connectivity(&graph);
         assert!(
             report.valid,
@@ -423,7 +526,10 @@ mod tests {
     #[test]
     fn test_ensure_opset_bumps_low_version() {
         let mut model = ModelProto {
-            opset_import: vec![OperatorSetIdProto { domain: String::new(), version: 10 }],
+            opset_import: vec![OperatorSetIdProto {
+                domain: String::new(),
+                version: 10,
+            }],
             ..Default::default()
         };
 
@@ -435,7 +541,10 @@ mod tests {
     #[test]
     fn test_ensure_opset_leaves_sufficient_version() {
         let mut model = ModelProto {
-            opset_import: vec![OperatorSetIdProto { domain: String::new(), version: 17 }],
+            opset_import: vec![OperatorSetIdProto {
+                domain: String::new(),
+                version: 17,
+            }],
             ..Default::default()
         };
 
@@ -464,12 +573,12 @@ mod tests {
         let mut graph = make_simple_graph();
 
         let inputs = vec![QdqWeightInput {
-            original_name:    "w".to_string(),
+            original_name: "w".to_string(),
             quantized_values: vec![25, 51, 76, 102],
-            scales:           vec![0.039_215_686], // ≈ 1/25.5
-            zero_points:      vec![0],
-            bits:             8,
-            axis:             None,
+            scales: vec![0.039_215_686], // ≈ 1/25.5
+            zero_points: vec![0],
+            bits: 8,
+            axis: None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
@@ -487,12 +596,12 @@ mod tests {
         let mut graph = make_simple_graph();
 
         let inputs = vec![QdqWeightInput {
-            original_name:    "w".to_string(),
+            original_name: "w".to_string(),
             quantized_values: vec![10, 20, 30, 40],
-            scales:           vec![0.1],
-            zero_points:      vec![-5],
-            bits:             8,
-            axis:             None,
+            scales: vec![0.1],
+            zero_points: vec![-5],
+            bits: 8,
+            axis: None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
@@ -500,8 +609,8 @@ mod tests {
         let init_names: Vec<&str> = graph.initializer.iter().map(|i| i.name.as_str()).collect();
 
         assert!(init_names.contains(&"w_quantized"), "missing w_quantized");
-        assert!(init_names.contains(&"w_scale"),     "missing w_scale");
-        assert!(init_names.contains(&"w_zp"),        "missing w_zp");
+        assert!(init_names.contains(&"w_scale"), "missing w_scale");
+        assert!(init_names.contains(&"w_zp"), "missing w_zp");
         assert!(
             !init_names.contains(&"w"),
             "original FP32 'w' should be removed"
@@ -513,12 +622,12 @@ mod tests {
         let mut graph = make_simple_graph();
 
         let inputs = vec![QdqWeightInput {
-            original_name:    "w".to_string(),
+            original_name: "w".to_string(),
             quantized_values: vec![10, 20, 30, 40],
-            scales:           vec![0.1],
-            zero_points:      vec![0],
-            bits:             8,
-            axis:             None,
+            scales: vec![0.1],
+            zero_points: vec![0],
+            bits: 8,
+            axis: None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
@@ -535,18 +644,21 @@ mod tests {
         let mut graph = make_simple_graph();
 
         let inputs = vec![QdqWeightInput {
-            original_name:    "w".to_string(),
+            original_name: "w".to_string(),
             quantized_values: vec![1, 2, 3, 4],
-            scales:           vec![1.0],
-            zero_points:      vec![0],
-            bits:             8,
-            axis:             None,
+            scales: vec![1.0],
+            zero_points: vec![0],
+            bits: 8,
+            axis: None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
 
         let dq = &graph.node[0]; // first node = DequantizeLinear
-        assert_eq!(dq.output[0], "w", "DequantizeLinear output must be original name");
+        assert_eq!(
+            dq.output[0], "w",
+            "DequantizeLinear output must be original name"
+        );
     }
 
     #[test]
@@ -555,20 +667,20 @@ mod tests {
 
         let inputs = vec![
             QdqWeightInput {
-                original_name:    "w1".to_string(),
+                original_name: "w1".to_string(),
                 quantized_values: vec![10, 20, 30, 40],
-                scales:           vec![0.1],
-                zero_points:      vec![0],
-                bits:             8,
-                axis:             None,
+                scales: vec![0.1],
+                zero_points: vec![0],
+                bits: 8,
+                axis: None,
             },
             QdqWeightInput {
-                original_name:    "w2".to_string(),
+                original_name: "w2".to_string(),
                 quantized_values: vec![50, 60, 70, 80],
-                scales:           vec![0.2],
-                zero_points:      vec![-1],
-                bits:             8,
-                axis:             None,
+                scales: vec![0.2],
+                zero_points: vec![-1],
+                bits: 8,
+                axis: None,
             },
         ];
 
@@ -576,7 +688,11 @@ mod tests {
 
         // Connectivity must still be valid
         let report = validate_graph_connectivity(&graph);
-        assert!(report.valid, "two-weight graph broken: {:?}", report.broken_refs);
+        assert!(
+            report.valid,
+            "two-weight graph broken: {:?}",
+            report.broken_refs
+        );
 
         // Should have 2 DequantizeLinear + 2 Conv = 4 nodes
         assert_eq!(graph.node.len(), 4);
@@ -586,7 +702,10 @@ mod tests {
         assert_eq!(graph.node[1].op_type, "DequantizeLinear");
 
         // Their outputs are the original weight names
-        let dq_outputs: Vec<&str> = graph.node.iter().take(2)
+        let dq_outputs: Vec<&str> = graph
+            .node
+            .iter()
+            .take(2)
             .map(|n| n.output[0].as_str())
             .collect();
         assert!(dq_outputs.contains(&"w1"));
@@ -599,12 +718,12 @@ mod tests {
 
         // INT4 range [-8, 7] — these arrive as i8 from ensure_unpacked()
         let inputs = vec![QdqWeightInput {
-            original_name:    "w".to_string(),
+            original_name: "w".to_string(),
             quantized_values: vec![-8, -1, 0, 7],
-            scales:           vec![0.5],
-            zero_points:      vec![0],
-            bits:             4, // flag says INT4; storage must still be INT8
-            axis:             None,
+            scales: vec![0.5],
+            zero_points: vec![0],
+            bits: 4, // flag says INT4; storage must still be INT8
+            axis: None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
@@ -628,12 +747,12 @@ mod tests {
         let mut graph = make_simple_graph();
 
         let inputs = vec![QdqWeightInput {
-            original_name:    "does_not_exist".to_string(),
+            original_name: "does_not_exist".to_string(),
             quantized_values: vec![1, 2, 3],
-            scales:           vec![1.0],
-            zero_points:      vec![0],
-            bits:             8,
-            axis:             None,
+            scales: vec![1.0],
+            zero_points: vec![0],
+            bits: 8,
+            axis: None,
         }];
 
         let result = apply_qdq_transform(&mut graph, &inputs);
@@ -651,9 +770,9 @@ mod tests {
         let mut graph = make_simple_graph();
 
         graph.initializer.push(TensorProto {
-            name:       "bias".to_string(),
-            data_type:  tensor_proto::DataType::Float as i32,
-            dims:       vec![2],
+            name: "bias".to_string(),
+            data_type: tensor_proto::DataType::Float as i32,
+            dims: vec![2],
             float_data: vec![0.1, 0.2],
             ..Default::default()
         });
@@ -662,12 +781,12 @@ mod tests {
         graph.node[0].input.push("bias".to_string());
 
         let inputs = vec![QdqWeightInput {
-            original_name:    "w".to_string(),
+            original_name: "w".to_string(),
             quantized_values: vec![10, 20, 30, 40],
-            scales:           vec![0.1],
-            zero_points:      vec![0],
-            bits:             8,
-            axis:             None,
+            scales: vec![0.1],
+            zero_points: vec![0],
+            bits: 8,
+            axis: None,
         }];
 
         apply_qdq_transform(&mut graph, &inputs).expect("QDQ transform failed");
@@ -675,11 +794,151 @@ mod tests {
         // "bias" must still be present and untouched
         let bias_init = graph.initializer.iter().find(|i| i.name == "bias");
 
-        assert!(bias_init.is_some(), "non-quantized 'bias' initializer must be preserved");
+        assert!(
+            bias_init.is_some(),
+            "non-quantized 'bias' initializer must be preserved"
+        );
         assert!((bias_init.unwrap().float_data[0] - 0.1).abs() < 1e-6);
 
         // Full connectivity check
         let report = validate_graph_connectivity(&graph);
         assert!(report.valid, "broken: {:?}", report.broken_refs);
+    }
+
+    #[test]
+    fn test_ensure_opset_strips_deprecated_attrs() {
+        use crate::onnx_proto::NodeProto;
+
+        let mut model = ModelProto {
+            opset_import: vec![OperatorSetIdProto {
+                domain: String::new(),
+                version: 7,
+            }],
+            graph: Some(GraphProto {
+                node: vec![
+                    // BatchNormalization with deprecated `spatial` attr (removed opset 9)
+                    NodeProto {
+                        op_type: "BatchNormalization".to_string(),
+                        input: vec!["x".into(), "s".into(), "b".into(), "m".into(), "v".into()],
+                        output: vec!["bn_out".into()],
+                        attribute: vec![
+                            AttributeProto {
+                                name: "epsilon".to_string(),
+                                r#type: attribute_proto::AttributeType::Float as i32,
+                                f: 1e-5,
+                                ..Default::default()
+                            },
+                            AttributeProto {
+                                name: "spatial".to_string(),
+                                r#type: attribute_proto::AttributeType::Int as i32,
+                                i: 1,
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                    // Dropout with `ratio` attribute — should be migrated
+                    // from attribute to 2nd input.
+                    NodeProto {
+                        op_type: "Dropout".to_string(),
+                        input: vec!["bn_out".into()],
+                        output: vec!["drop_out".into(), "drop_mask".into()],
+                        attribute: vec![AttributeProto {
+                            name: "ratio".to_string(),
+                            r#type: attribute_proto::AttributeType::Float as i32,
+                            f: 0.3,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                    // Softmax with NO axis attribute — old default is 1,
+                    // opset 13 changes default to -1, so axis=1 must be added.
+                    NodeProto {
+                        op_type: "Softmax".to_string(),
+                        input: vec!["drop_out".into()],
+                        output: vec!["sm_out".into()],
+                        attribute: vec![],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        ensure_opset_version(&mut model, 13);
+
+        // Opset should be 13
+        let opset = model
+            .opset_import
+            .iter()
+            .find(|o| o.domain.is_empty())
+            .unwrap();
+        assert_eq!(opset.version, 13);
+
+        let graph = model.graph.as_ref().unwrap();
+
+        // BatchNormalization: `spatial` must be removed, `epsilon` kept
+        let bn = &graph.node[0];
+        assert!(
+            !bn.attribute.iter().any(|a| a.name == "spatial"),
+            "BatchNormalization.spatial should be stripped"
+        );
+        assert!(
+            bn.attribute.iter().any(|a| a.name == "epsilon"),
+            "BatchNormalization.epsilon should be preserved"
+        );
+
+        // Dropout: `ratio` attribute must be removed and moved to 2nd input
+        let drop = &graph.node[1];
+        assert!(
+            !drop.attribute.iter().any(|a| a.name == "ratio"),
+            "Dropout.ratio attribute should be removed"
+        );
+        assert_eq!(drop.input.len(), 2, "Dropout should now have 2 inputs");
+        let ratio_init_name = &drop.input[1];
+
+        // The ratio value should be stored as an initializer
+        let ratio_init = graph
+            .initializer
+            .iter()
+            .find(|i| &i.name == ratio_init_name)
+            .expect("Dropout ratio initializer should exist");
+        assert_eq!(ratio_init.data_type, tensor_proto::DataType::Float as i32);
+        assert!(
+            (ratio_init.float_data[0] - 0.3).abs() < 1e-6,
+            "ratio should be 0.3"
+        );
+
+        // Softmax: must have explicit axis=1 added (old default, since opset 13 changed it to -1)
+        let sm = &graph.node[2];
+        assert_eq!(sm.op_type, "Softmax");
+        let axis_attr = sm
+            .attribute
+            .iter()
+            .find(|a| a.name == "axis")
+            .expect("Softmax should have axis attribute added");
+        assert_eq!(axis_attr.i, 1, "Softmax axis should be 1 (old default)");
+    }
+
+    #[test]
+    fn test_ensure_opset_no_downgrade() {
+        let mut model = ModelProto {
+            opset_import: vec![OperatorSetIdProto {
+                domain: String::new(),
+                version: 15,
+            }],
+            graph: Some(GraphProto::default()),
+            ..Default::default()
+        };
+
+        // Requesting 10 should NOT downgrade from 15
+        ensure_opset_version(&mut model, 10);
+        let opset = model
+            .opset_import
+            .iter()
+            .find(|o| o.domain.is_empty())
+            .unwrap();
+        assert_eq!(opset.version, 15);
     }
 }

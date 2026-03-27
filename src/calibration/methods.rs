@@ -4,8 +4,7 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Strategy for choosing the quantization range from observed activations.
-#[derive(Debug, Clone, Copy)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum CalibrationMethod {
     /// Use the full observed min/max range (default).
     #[default]
@@ -20,7 +19,6 @@ pub enum CalibrationMethod {
     /// Minimize mean squared error between original and dequantized values.
     MSE,
 }
-
 
 impl fmt::Display for CalibrationMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -19,10 +19,7 @@
 //! which matches the dequantize formula already used in `QuantParams` and
 //! `QuantParamsInt4`.
 
-use crate::onnx_proto::{
-    AttributeProto, NodeProto, TensorProto,
-    attribute_proto, tensor_proto,
-};
+use crate::onnx_proto::{attribute_proto, tensor_proto, AttributeProto, NodeProto, TensorProto};
 
 // ---------------------------------------------------------------------------
 // Name generation
@@ -49,10 +46,10 @@ impl DequantLinearNames {
     pub fn from_original(original_name: &str) -> Self {
         Self {
             quantized_name: format!("{}_quantized", original_name),
-            scale_name:     format!("{}_scale", original_name),
-            zp_name:        format!("{}_zp", original_name),
-            node_name:      format!("DequantizeLinear_{}", original_name),
-            output_name:    original_name.to_string(),
+            scale_name: format!("{}_scale", original_name),
+            zp_name: format!("{}_zp", original_name),
+            node_name: format!("DequantizeLinear_{}", original_name),
+            output_name: original_name.to_string(),
         }
     }
 }
@@ -70,29 +67,26 @@ impl DequantLinearNames {
 ///
 /// When `axis` is `Some(a)`, the `axis` attribute is set on the node,
 /// enabling per-channel dequantization (opset ≥ 13).
-pub fn build_dequantize_linear_node(
-    names: &DequantLinearNames,
-    axis: Option<usize>,
-) -> NodeProto {
+pub fn build_dequantize_linear_node(names: &DequantLinearNames, axis: Option<usize>) -> NodeProto {
     let attribute = match axis {
         Some(a) => vec![AttributeProto {
-            name:   "axis".to_string(),
+            name: "axis".to_string(),
             r#type: attribute_proto::AttributeType::Int as i32,
-            i:      a as i64,
+            i: a as i64,
             ..Default::default()
         }],
         None => vec![],
     };
 
     NodeProto {
-        op_type:   "DequantizeLinear".to_string(),
-        name:      names.node_name.clone(),
-        input:     vec![
+        op_type: "DequantizeLinear".to_string(),
+        name: names.node_name.clone(),
+        input: vec![
             names.quantized_name.clone(),
             names.scale_name.clone(),
             names.zp_name.clone(),
         ],
-        output:    vec![names.output_name.clone()],
+        output: vec![names.output_name.clone()],
         attribute,
         ..Default::default()
     }
@@ -113,11 +107,11 @@ pub fn build_quantized_weight_tensor(
     shape: &[i64],
 ) -> TensorProto {
     TensorProto {
-        name:      names.quantized_name.clone(),
+        name: names.quantized_name.clone(),
         data_type: tensor_proto::DataType::Int8 as i32,
-        dims:      shape.to_vec(),
+        dims: shape.to_vec(),
         // Each i8 value → one byte.  Reinterpret cast, not value conversion.
-        raw_data:  values.iter().map(|&v| v as u8).collect(),
+        raw_data: values.iter().map(|&v| v as u8).collect(),
         ..Default::default()
     }
 }
@@ -129,8 +123,8 @@ pub fn build_quantized_weight_tensor(
 /// channel and the tensor is rank-1 with shape `[num_channels]`.
 pub fn build_scale_tensor(names: &DequantLinearNames, scales: &[f32]) -> TensorProto {
     let mut t = TensorProto {
-        name:       names.scale_name.clone(),
-        data_type:  tensor_proto::DataType::Float as i32,
+        name: names.scale_name.clone(),
+        data_type: tensor_proto::DataType::Float as i32,
         float_data: scales.to_vec(),
         ..Default::default()
     };
@@ -148,9 +142,9 @@ pub fn build_scale_tensor(names: &DequantLinearNames, scales: &[f32]) -> TensorP
 /// For per-channel, `zps` has one per channel → rank-1 `[num_channels]`.
 pub fn build_zero_point_tensor(names: &DequantLinearNames, zps: &[i8]) -> TensorProto {
     let mut t = TensorProto {
-        name:      names.zp_name.clone(),
+        name: names.zp_name.clone(),
         data_type: tensor_proto::DataType::Int8 as i32,
-        raw_data:  zps.iter().map(|&v| v as u8).collect(),
+        raw_data: zps.iter().map(|&v| v as u8).collect(),
         ..Default::default()
     };
     if zps.len() > 1 {
@@ -174,10 +168,10 @@ mod tests {
     fn test_names_from_simple_weight() {
         let n = DequantLinearNames::from_original("conv1.weight");
         assert_eq!(n.quantized_name, "conv1.weight_quantized");
-        assert_eq!(n.scale_name,     "conv1.weight_scale");
-        assert_eq!(n.zp_name,        "conv1.weight_zp");
-        assert_eq!(n.node_name,      "DequantizeLinear_conv1.weight");
-        assert_eq!(n.output_name,    "conv1.weight");
+        assert_eq!(n.scale_name, "conv1.weight_scale");
+        assert_eq!(n.zp_name, "conv1.weight_zp");
+        assert_eq!(n.node_name, "DequantizeLinear_conv1.weight");
+        assert_eq!(n.output_name, "conv1.weight");
     }
 
     #[test]
@@ -185,7 +179,7 @@ mod tests {
         // Real ResNet-18 weight names look like this
         let n = DequantLinearNames::from_original("layer1.0.conv1.weight");
         assert_eq!(n.quantized_name, "layer1.0.conv1.weight_quantized");
-        assert_eq!(n.output_name,    "layer1.0.conv1.weight");
+        assert_eq!(n.output_name, "layer1.0.conv1.weight");
     }
 
     #[test]
@@ -194,7 +188,7 @@ mod tests {
         let node = build_dequantize_linear_node(&names, None);
 
         assert_eq!(node.op_type, "DequantizeLinear");
-        assert_eq!(node.name,    "DequantizeLinear_fc.weight");
+        assert_eq!(node.name, "DequantizeLinear_fc.weight");
 
         assert_eq!(node.input.len(), 3);
         assert_eq!(node.input[0], "fc.weight_quantized");
@@ -218,12 +212,12 @@ mod tests {
 
     #[test]
     fn test_quantized_weight_tensor_shape_and_data() {
-        let names  = DequantLinearNames::from_original("w");
+        let names = DequantLinearNames::from_original("w");
         let values = vec![1i8, -2, 3, -4, 5, 6];
-        let shape  = vec![2i64, 3];
+        let shape = vec![2i64, 3];
         let t = build_quantized_weight_tensor(&names, &values, &shape);
 
-        assert_eq!(t.name,      "w_quantized");
+        assert_eq!(t.name, "w_quantized");
         assert_eq!(t.data_type, tensor_proto::DataType::Int8 as i32);
         assert_eq!(t.dims.len(), 2);
         assert_eq!(t.dims[0], 2);
@@ -239,7 +233,7 @@ mod tests {
         let names = DequantLinearNames::from_original("w");
         let t = build_scale_tensor(&names, &[0.003921]);
 
-        assert_eq!(t.name,      "w_scale");
+        assert_eq!(t.name, "w_scale");
         assert_eq!(t.data_type, tensor_proto::DataType::Float as i32);
         assert_eq!(t.dims.len(), 0, "single scale must be rank-0 scalar");
         assert!((t.float_data[0] - 0.003921).abs() < 1e-6);
@@ -260,7 +254,7 @@ mod tests {
         let names = DequantLinearNames::from_original("w");
         let t = build_zero_point_tensor(&names, &[-3]);
 
-        assert_eq!(t.name,      "w_zp");
+        assert_eq!(t.name, "w_zp");
         assert_eq!(t.data_type, tensor_proto::DataType::Int8 as i32);
         assert_eq!(t.dims.len(), 0, "single zp must be rank-0 scalar");
         assert_eq!(t.raw_data[0], (-3i8) as u8);
@@ -279,9 +273,9 @@ mod tests {
     #[test]
     fn test_int4_range_values_round_trip() {
         // INT4 signed range: [-8, 7].  These arrive as i8; we store them as-is.
-        let names  = DequantLinearNames::from_original("w");
+        let names = DequantLinearNames::from_original("w");
         let values = vec![-8i8, -1, 0, 7];
-        let shape  = vec![4i64];
+        let shape = vec![4i64];
         let t = build_quantized_weight_tensor(&names, &values, &shape);
 
         let recovered: Vec<i8> = t.raw_data.iter().map(|&b| b as i8).collect();

@@ -50,7 +50,10 @@ impl QuantConfig {
     }
 
     /// Set the calibration method for range optimization.
-    pub fn with_calibration(mut self, method: crate::calibration::methods::CalibrationMethod) -> Self {
+    pub fn with_calibration(
+        mut self,
+        method: crate::calibration::methods::CalibrationMethod,
+    ) -> Self {
         self.calibration_method = Some(method);
         self
     }
@@ -134,18 +137,24 @@ pub type QuantParamsInt4 = QuantParamsGeneric<Int4Range>;
 
 impl<R: QuantRange> QuantParamsGeneric<R> {
     /// Quantization scale factor.
-    pub fn scale(&self) -> f32 { self.scale }
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
     /// Quantization zero point.
-    pub fn zero_point(&self) -> i8 { self.zero_point }
+    pub fn zero_point(&self) -> i8 {
+        self.zero_point
+    }
 
     /// Compute quantization parameters from a floating-point range.
     pub fn from_range(min: f32, max: f32) -> Self {
         let min = min.min(0.0);
         let max = max.max(0.0);
 
-        // Handle edge case: if min == max, set a small range
+        // Handle constant-value tensors: when min ≈ max the data is (near-)constant.
+        // Use unit scale centred on zero so that the constant dequantizes accurately.
         let (min, max) = if (max - min).abs() < 1e-8 {
-            (min - 0.01, max + 0.01)
+            let abs = min.abs().max(max.abs()).max(1e-8);
+            (-abs, abs)
         } else {
             (min, max)
         };
@@ -154,7 +163,13 @@ impl<R: QuantRange> QuantParamsGeneric<R> {
         let scale = scale.max(1e-8);
 
         let initial_zero_point = R::QMIN - min / scale;
-        let zero_point = initial_zero_point.round().clamp(R::QMIN, R::QMAX) as i8;
+        // Guard against NaN — if min/scale produced NaN (degenerate input),
+        // fall back to 0 to avoid undefined behaviour on the `as i8` cast.
+        let zero_point = if initial_zero_point.is_finite() {
+            initial_zero_point.round().clamp(R::QMIN, R::QMAX) as i8
+        } else {
+            0i8
+        };
 
         QuantParamsGeneric {
             scale,
@@ -212,11 +227,17 @@ pub type QuantizedTensorInt4 = QuantizedTensorGeneric<Int4Range>;
 
 impl<R: QuantRange> QuantizedTensorGeneric<R> {
     /// Tensor shape.
-    pub fn shape(&self) -> &[usize] { &self.shape }
+    pub fn shape(&self) -> &[usize] {
+        &self.shape
+    }
     /// Per-tensor quantization parameters (channel-0 if per-channel).
-    pub fn params(&self) -> &QuantParamsGeneric<R> { &self.params }
+    pub fn params(&self) -> &QuantParamsGeneric<R> {
+        &self.params
+    }
     /// Whether per-channel quantization was used.
-    pub fn is_per_channel(&self) -> bool { self.per_channel }
+    pub fn is_per_channel(&self) -> bool {
+        self.per_channel
+    }
 
     /// Quantize FP32 data, computing the range from the data.
     ///
@@ -225,26 +246,43 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
     /// Returns [`QuantizeError::InvalidTensor`] if `data` is empty or shape mismatches.
     pub fn from_f32(data: &[f32], shape: Vec<usize>) -> Result<Self> {
         if data.is_empty() {
-            return Err(QuantizeError::InvalidTensor { reason: "Cannot quantize empty tensor".into() });
+            return Err(QuantizeError::InvalidTensor {
+                reason: "Cannot quantize empty tensor".into(),
+            });
         }
 
         let expected_len: usize = shape.iter().product();
         if expected_len != data.len() {
-            return Err(QuantizeError::InvalidTensor { reason: format!("Shape {:?} expects {} elements but got {}", shape, expected_len, data.len()) });
+            return Err(QuantizeError::InvalidTensor {
+                reason: format!(
+                    "Shape {:?} expects {} elements but got {}",
+                    shape,
+                    expected_len,
+                    data.len()
+                ),
+            });
         }
 
-        let min = data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
-        let max = data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
+        let min = data
+            .iter()
+            .copied()
+            .filter(|v| v.is_finite())
+            .fold(f32::INFINITY, f32::min);
+        let max = data
+            .iter()
+            .copied()
+            .filter(|v| v.is_finite())
+            .fold(f32::NEG_INFINITY, f32::max);
 
         if !min.is_finite() || !max.is_finite() {
-            return Err(QuantizeError::InvalidTensor { reason: "Tensor contains only non-finite values (NaN/Inf)".into() });
+            return Err(QuantizeError::InvalidTensor {
+                reason: "Tensor contains only non-finite values (NaN/Inf)".into(),
+            });
         }
 
         let params = QuantParamsGeneric::<R>::from_range(min, max);
 
-        let quantized_data: Vec<i8> = data.iter()
-            .map(|&v| params.quantize(v))
-            .collect();
+        let quantized_data: Vec<i8> = data.iter().map(|&v| params.quantize(v)).collect();
 
         Ok(QuantizedTensorGeneric {
             data: quantized_data,
@@ -261,21 +299,33 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
     /// # Errors
     ///
     /// Returns [`QuantizeError::InvalidTensor`] if `data` is empty or shape mismatches.
-    pub fn from_f32_with_range(data: &[f32], shape: Vec<usize>, min: f32, max: f32) -> Result<Self> {
+    pub fn from_f32_with_range(
+        data: &[f32],
+        shape: Vec<usize>,
+        min: f32,
+        max: f32,
+    ) -> Result<Self> {
         if data.is_empty() {
-            return Err(QuantizeError::InvalidTensor { reason: "Cannot quantize empty tensor".into() });
+            return Err(QuantizeError::InvalidTensor {
+                reason: "Cannot quantize empty tensor".into(),
+            });
         }
 
         let expected_len: usize = shape.iter().product();
         if expected_len != data.len() {
-            return Err(QuantizeError::InvalidTensor { reason: format!("Shape {:?} expects {} elements but got {}", shape, expected_len, data.len()) });
+            return Err(QuantizeError::InvalidTensor {
+                reason: format!(
+                    "Shape {:?} expects {} elements but got {}",
+                    shape,
+                    expected_len,
+                    data.len()
+                ),
+            });
         }
 
         let params = QuantParamsGeneric::<R>::from_range(min, max);
 
-        let quantized_data: Vec<i8> = data.iter()
-            .map(|&v| params.quantize(v))
-            .collect();
+        let quantized_data: Vec<i8> = data.iter().map(|&v| params.quantize(v)).collect();
 
         Ok(QuantizedTensorGeneric {
             data: quantized_data,
@@ -293,21 +343,29 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
     ///
     /// Returns [`QuantizeError::InvalidTensor`] if `data` is empty, shape
     /// mismatches, or the tensor is scalar.
-    pub fn from_f32_per_channel(
-        data: &[f32],
-        shape: Vec<usize>,
-    ) -> Result<Self> {
+    pub fn from_f32_per_channel(data: &[f32], shape: Vec<usize>) -> Result<Self> {
         if data.is_empty() {
-            return Err(QuantizeError::InvalidTensor { reason: "Cannot quantize empty tensor".into() });
+            return Err(QuantizeError::InvalidTensor {
+                reason: "Cannot quantize empty tensor".into(),
+            });
         }
 
         if shape.is_empty() {
-            return Err(QuantizeError::InvalidTensor { reason: "Cannot do per-channel quantization on scalar".into() });
+            return Err(QuantizeError::InvalidTensor {
+                reason: "Cannot do per-channel quantization on scalar".into(),
+            });
         }
 
         let expected_len: usize = shape.iter().product();
         if expected_len != data.len() {
-            return Err(QuantizeError::InvalidTensor { reason: format!("Shape {:?} expects {} elements but got {}", shape, expected_len, data.len()) });
+            return Err(QuantizeError::InvalidTensor {
+                reason: format!(
+                    "Shape {:?} expects {} elements but got {}",
+                    shape,
+                    expected_len,
+                    data.len()
+                ),
+            });
         }
 
         let num_channels = shape[0];
@@ -318,12 +376,23 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
         for channel_idx in 0..num_channels {
             let channel_data = extract_channel(data, &shape, channel_idx)?;
 
-            let min = channel_data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
-            let max = channel_data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
+            let min = channel_data
+                .iter()
+                .copied()
+                .filter(|v| v.is_finite())
+                .fold(f32::INFINITY, f32::min);
+            let max = channel_data
+                .iter()
+                .copied()
+                .filter(|v| v.is_finite())
+                .fold(f32::NEG_INFINITY, f32::max);
 
             if !min.is_finite() || !max.is_finite() {
                 return Err(QuantizeError::InvalidTensor {
-                    reason: format!("Channel {} contains only non-finite values (NaN/Inf)", channel_idx),
+                    reason: format!(
+                        "Channel {} contains only non-finite values (NaN/Inf)",
+                        channel_idx
+                    ),
                 });
             }
 
@@ -397,7 +466,8 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
 
         let dequantized = self.to_f32();
 
-        let sum: f32 = original.iter()
+        let sum: f32 = original
+            .iter()
             .zip(dequantized.iter())
             .map(|(a, b)| (a - b).powi(2))
             .sum();
@@ -518,17 +588,32 @@ pub fn unpack_int4(packed: &[u8], num_values: usize) -> Vec<i8> {
 /// layout for weight tensors (e.g. [out_channels, in_channels, H, W]).
 fn extract_channel(data: &[f32], shape: &[usize], channel_idx: usize) -> Result<Vec<f32>> {
     if shape.is_empty() {
-        return Err(QuantizeError::InvalidTensor { reason: "Cannot extract channel from empty shape".into() });
+        return Err(QuantizeError::InvalidTensor {
+            reason: "Cannot extract channel from empty shape".into(),
+        });
     }
     let num_channels = shape[0];
     if num_channels == 0 {
-        return Err(QuantizeError::InvalidTensor { reason: "Number of channels is 0".into() });
+        return Err(QuantizeError::InvalidTensor {
+            reason: "Number of channels is 0".into(),
+        });
     }
     if channel_idx >= num_channels {
-        return Err(QuantizeError::InvalidTensor { reason: format!("Channel index {} out of bounds for {} channels", channel_idx, num_channels) });
+        return Err(QuantizeError::InvalidTensor {
+            reason: format!(
+                "Channel index {} out of bounds for {} channels",
+                channel_idx, num_channels
+            ),
+        });
     }
-    if data.len() % num_channels != 0 {
-        return Err(QuantizeError::InvalidTensor { reason: format!("Data length {} not evenly divisible by {} channels", data.len(), num_channels) });
+    if !data.len().is_multiple_of(num_channels) {
+        return Err(QuantizeError::InvalidTensor {
+            reason: format!(
+                "Data length {} not evenly divisible by {} channels",
+                data.len(),
+                num_channels
+            ),
+        });
     }
     let elements_per_channel = data.len() / num_channels;
     let start = channel_idx * elements_per_channel;
@@ -667,7 +752,8 @@ impl QuantizedTensorType {
 /// High-level quantizer that combines configuration with optional calibration.
 pub struct Quantizer {
     config: QuantConfig,
-    calibration_stats: Option<std::collections::HashMap<String, crate::calibration::stats::ActivationStats>>,
+    calibration_stats:
+        Option<std::collections::HashMap<String, crate::calibration::stats::ActivationStats>>,
 }
 
 impl std::fmt::Debug for Quantizer {
@@ -718,26 +804,10 @@ impl Quantizer {
                     (stats.min(), stats.max())
                 }
             } else {
-                // No stats for this layer, use data min/max
-                let min = data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
-                let max = data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
-                if !min.is_finite() || !max.is_finite() {
-                    return Err(QuantizeError::InvalidTensor {
-                        reason: format!("Tensor '{}' contains only non-finite values (NaN/Inf)", name),
-                    });
-                }
-                (min, max)
+                finite_min_max(data, name)?
             }
         } else {
-            // No calibration, use data min/max
-            let min = data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
-            let max = data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
-            if !min.is_finite() || !max.is_finite() {
-                return Err(QuantizeError::InvalidTensor {
-                    reason: format!("Tensor '{}' contains only non-finite values (NaN/Inf)", name),
-                });
-            }
-            (min, max)
+            finite_min_max(data, name)?
         };
 
         self.quantize_with_range(data, shape, min, max)
@@ -780,7 +850,9 @@ impl Quantizer {
             8 => {
                 let t = match (pc, range) {
                     (true, _) => QuantizedTensor::from_f32_per_channel(data, shape)?,
-                    (false, Some((min, max))) => QuantizedTensor::from_f32_with_range(data, shape, min, max)?,
+                    (false, Some((min, max))) => {
+                        QuantizedTensor::from_f32_with_range(data, shape, min, max)?
+                    }
                     (false, None) => QuantizedTensor::from_f32(data, shape)?,
                 };
                 Ok(QuantizedTensorType::Int8(t))
@@ -788,7 +860,9 @@ impl Quantizer {
             4 => {
                 let mut t = match (pc, range) {
                     (true, _) => QuantizedTensorInt4::from_f32_per_channel(data, shape)?,
-                    (false, Some((min, max))) => QuantizedTensorInt4::from_f32_with_range(data, shape, min, max)?,
+                    (false, Some((min, max))) => {
+                        QuantizedTensorInt4::from_f32_with_range(data, shape, min, max)?
+                    }
                     (false, None) => QuantizedTensorInt4::from_f32(data, shape)?,
                 };
                 t.pack();
@@ -805,8 +879,34 @@ impl Quantizer {
 // Calibration helper
 // ---------------------------------------------------------------------------
 
+/// Compute the finite min/max of `data`, returning an error if all values are NaN/Inf.
+fn finite_min_max(data: &[f32], name: &str) -> Result<(f32, f32)> {
+    let min = data
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .fold(f32::INFINITY, f32::min);
+    let max = data
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .fold(f32::NEG_INFINITY, f32::max);
+    if !min.is_finite() || !max.is_finite() {
+        return Err(QuantizeError::InvalidTensor {
+            reason: format!(
+                "Tensor '{}' contains only non-finite values (NaN/Inf)",
+                name
+            ),
+        });
+    }
+    Ok((min, max))
+}
+
 /// Sample synthetic data from the observed activation histogram distribution.
-fn sample_from_activation_stats(stats: &crate::calibration::stats::ActivationStats, n: usize) -> Vec<f32> {
+fn sample_from_activation_stats(
+    stats: &crate::calibration::stats::ActivationStats,
+    n: usize,
+) -> Vec<f32> {
     use rand::Rng;
 
     let histogram = stats.histogram_data();
@@ -817,7 +917,9 @@ fn sample_from_activation_stats(stats: &crate::calibration::stats::ActivationSta
         if !range.is_finite() || range.abs() < 1e-8 {
             return vec![stats.mean(); n];
         }
-        return (0..n).map(|_| rng.gen::<f32>() * range + stats.min()).collect();
+        return (0..n)
+            .map(|_| rng.gen::<f32>() * range + stats.min())
+            .collect();
     }
 
     let total_count: usize = histogram.iter().map(|&(_, c)| c).sum();
@@ -827,7 +929,9 @@ fn sample_from_activation_stats(stats: &crate::calibration::stats::ActivationSta
         if !range.is_finite() || range.abs() < 1e-8 {
             return vec![stats.mean(); n];
         }
-        return (0..n).map(|_| rng.gen::<f32>() * range + stats.min()).collect();
+        return (0..n)
+            .map(|_| rng.gen::<f32>() * range + stats.min())
+            .collect();
     }
 
     let mut samples = Vec::with_capacity(n);
@@ -897,7 +1001,10 @@ mod tests {
 
     #[test]
     fn test_bits_for_layer_default() {
-        let config = QuantConfig { bits: 8, ..Default::default() };
+        let config = QuantConfig {
+            bits: 8,
+            ..Default::default()
+        };
         assert_eq!(config.bits_for_layer("any.weight"), 8);
     }
 
@@ -961,10 +1068,12 @@ mod tests {
         assert_eq!(quantized.channel_params.as_ref().unwrap().len(), 2);
 
         let dequantized = quantized.to_f32();
-        let error: f32 = data.iter()
+        let error: f32 = data
+            .iter()
             .zip(dequantized.iter())
             .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>() / data.len() as f32;
+            .sum::<f32>()
+            / data.len() as f32;
 
         println!("Per-channel MSE: {}", error);
         assert!(error < 0.1);
@@ -1023,9 +1132,12 @@ mod tests {
         println!("Per-tensor MSE:  {:.8}", per_tensor_error);
         println!("Per-channel MSE: {:.8}", per_channel_error);
 
-        assert!(per_channel_error < per_tensor_error,
-                "Per-channel ({:.8}) should be better than per-tensor ({:.8})",
-                per_channel_error, per_tensor_error);
+        assert!(
+            per_channel_error < per_tensor_error,
+            "Per-channel ({:.8}) should be better than per-tensor ({:.8})",
+            per_channel_error,
+            per_tensor_error
+        );
     }
 
     #[test]
@@ -1044,8 +1156,13 @@ mod tests {
             let quantized = params.quantize(original);
             let dequantized = params.dequantize(quantized);
 
-            println!("Original: {:.2}, Quantized: {}, Dequantized: {:.2}, Error: {:.4}",
-                     original, quantized, dequantized, (original - dequantized).abs());
+            println!(
+                "Original: {:.2}, Quantized: {}, Dequantized: {:.2}, Error: {:.4}",
+                original,
+                quantized,
+                dequantized,
+                (original - dequantized).abs()
+            );
 
             assert!((original - dequantized).abs() < params.scale * 2.0);
         }
@@ -1068,35 +1185,41 @@ mod tests {
         let data = vec![-1.0, -0.5, 0.0, 0.5, 1.0];
 
         let params_int8 = QuantParams::from_range(-1.0, 1.0);
-        let error_int8: f32 = data.iter()
+        let error_int8: f32 = data
+            .iter()
             .map(|&v| {
                 let q = params_int8.quantize(v);
                 let dq = params_int8.dequantize(q);
                 (v - dq).powi(2)
             })
-            .sum::<f32>() / data.len() as f32;
+            .sum::<f32>()
+            / data.len() as f32;
 
         let params_int4 = QuantParamsInt4::from_range(-1.0, 1.0);
-        let error_int4: f32 = data.iter()
+        let error_int4: f32 = data
+            .iter()
             .map(|&v| {
                 let q = params_int4.quantize(v);
                 let dq = params_int4.dequantize(q);
                 (v - dq).powi(2)
             })
-            .sum::<f32>() / data.len() as f32;
+            .sum::<f32>()
+            / data.len() as f32;
 
         println!("INT8 MSE: {:.8}", error_int8);
         println!("INT4 MSE: {:.8}", error_int4);
 
         assert!(error_int4 > error_int8);
 
-        assert!(error_int4 < error_int8 * 500.0,
-                "INT4 error ({:.8}) is too high compared to INT8 ({:.8})",
-                error_int4, error_int8);
+        assert!(
+            error_int4 < error_int8 * 500.0,
+            "INT4 error ({:.8}) is too high compared to INT8 ({:.8})",
+            error_int4,
+            error_int8
+        );
 
         assert!(error_int4.is_finite());
         assert!(error_int4 < 0.01);
-
     }
 
     #[test]
@@ -1208,8 +1331,14 @@ mod tests {
         let int4_error = int4_quantized.quantization_error(&data);
 
         println!("INT8: {} bytes, MSE: {:.8}", int8_size, int8_error);
-        println!("INT4 (unpacked): {} bytes, MSE: {:.8}", int4_size, int4_error);
-        println!("INT4 (packed): {} bytes, MSE: {:.8}", int4_packed_size, int4_error);
+        println!(
+            "INT4 (unpacked): {} bytes, MSE: {:.8}",
+            int4_size, int4_error
+        );
+        println!(
+            "INT4 (packed): {} bytes, MSE: {:.8}",
+            int4_packed_size, int4_error
+        );
 
         assert_eq!(int4_size, int8_size);
 
@@ -1223,9 +1352,9 @@ mod tests {
     #[test]
     fn test_int4_large_tensor() {
         let size = 64 * 3 * 3 * 3; // 64 filters, 3x3x3 kernels
-        let data: Vec<f32> = (0..size).map(|i| {
-            ((i as f32 / size as f32) * 2.0 - 1.0) * 0.5
-        }).collect();
+        let data: Vec<f32> = (0..size)
+            .map(|i| ((i as f32 / size as f32) * 2.0 - 1.0) * 0.5)
+            .collect();
 
         let shape = vec![64, 3, 3, 3];
 
@@ -1263,7 +1392,12 @@ mod tests {
             println!("  Dequantized: {:?}", dequantized);
 
             for &val in &quantized.data {
-                assert!(val >= -8 && val <= 7, "Value {} out of range for {}", val, desc);
+                assert!(
+                    val >= -8 && val <= 7,
+                    "Value {} out of range for {}",
+                    val,
+                    desc
+                );
             }
         }
     }
@@ -1351,8 +1485,11 @@ mod tests {
 
         println!("\nLarge vector:");
         println!("  Original: {} values", values.len());
-        println!("  Packed:   {} bytes ({}x compression)", packed.len(),
-                values.len() / packed.len());
+        println!(
+            "  Packed:   {} bytes ({}x compression)",
+            packed.len(),
+            values.len() / packed.len()
+        );
         println!("  Unpacked: {} values", unpacked.len());
     }
 
@@ -1374,8 +1511,11 @@ mod tests {
         println!("  Packed:      {} bytes", packed_size);
         println!("  Compression: {:.2}x", compression_ratio);
 
-        assert!((compression_ratio - 2.0).abs() < 0.01,
-                "Expected ~2x compression, got {:.2}x", compression_ratio);
+        assert!(
+            (compression_ratio - 2.0).abs() < 0.01,
+            "Expected ~2x compression, got {:.2}x",
+            compression_ratio
+        );
     }
 
     #[test]
@@ -1397,7 +1537,10 @@ mod tests {
         println!("\nAfter packing:");
         println!("  Packed size: {} bytes", quantized.size_bytes());
         println!("  Is packed: {}", quantized.is_packed());
-        println!("  Compression: {}x", quantized.unpacked_size_bytes() / quantized.size_bytes());
+        println!(
+            "  Compression: {}x",
+            quantized.unpacked_size_bytes() / quantized.size_bytes()
+        );
 
         assert!(quantized.is_packed());
         assert_eq!(quantized.size_bytes(), 500);
@@ -1449,9 +1592,11 @@ mod tests {
 
         let error_after = quantized.quantization_error(&data);
         println!("Error after packing:  {:.8}", error_after);
-        println!("Size: {} bytes (packed from {} bytes)",
-                quantized.size_bytes(),
-                quantized.unpacked_size_bytes());
+        println!(
+            "Size: {} bytes (packed from {} bytes)",
+            quantized.size_bytes(),
+            quantized.unpacked_size_bytes()
+        );
 
         assert!((error_before - error_after).abs() < 1e-6);
 
@@ -1461,9 +1606,9 @@ mod tests {
     #[test]
     fn test_int4_compression_comparison() {
         let size = 10000;
-        let data: Vec<f32> = (0..size).map(|i| {
-            ((i as f32 / size as f32) * 2.0 - 1.0) * 0.5
-        }).collect();
+        let data: Vec<f32> = (0..size)
+            .map(|i| ((i as f32 / size as f32) * 2.0 - 1.0) * 0.5)
+            .collect();
         let shape = vec![size];
 
         let fp32_size = size * std::mem::size_of::<f32>();
@@ -1480,9 +1625,21 @@ mod tests {
 
         println!("\nCompression Comparison:");
         println!("  FP32:          {} bytes", fp32_size);
-        println!("  INT8:          {} bytes ({:.1}x)", int8_size, fp32_size as f32 / int8_size as f32);
-        println!("  INT4 unpacked: {} bytes ({:.1}x)", int4_unpacked_size, fp32_size as f32 / int4_unpacked_size as f32);
-        println!("  INT4 packed:   {} bytes ({:.1}x)", int4_packed_size, fp32_size as f32 / int4_packed_size as f32);
+        println!(
+            "  INT8:          {} bytes ({:.1}x)",
+            int8_size,
+            fp32_size as f32 / int8_size as f32
+        );
+        println!(
+            "  INT4 unpacked: {} bytes ({:.1}x)",
+            int4_unpacked_size,
+            fp32_size as f32 / int4_unpacked_size as f32
+        );
+        println!(
+            "  INT4 packed:   {} bytes ({:.1}x)",
+            int4_packed_size,
+            fp32_size as f32 / int4_packed_size as f32
+        );
 
         assert_eq!(fp32_size / int8_size, 4); // 4x compression
         assert_eq!(fp32_size / int4_packed_size, 8); // 8x compression!
@@ -1546,7 +1703,8 @@ mod tests {
         println!("Testing Per-Tensor Quantization");
         println!("\n{}", "=".repeat(60));
 
-        let test_weights: Vec<_> = weights.iter()
+        let test_weights: Vec<_> = weights
+            .iter()
             .filter(|w| w.data.len() > 1000)
             .take(5)
             .collect();
@@ -1561,7 +1719,11 @@ mod tests {
             };
 
             println!("[{}] {}", idx + 1, name);
-            println!("    Shape: {:?}, Elements: {}", weight.shape, weight.data.len());
+            println!(
+                "    Shape: {:?}, Elements: {}",
+                weight.shape,
+                weight.data.len()
+            );
 
             let fp32_size = weight.data.len() * 4;
 
@@ -1581,26 +1743,45 @@ mod tests {
                 continue;
             };
 
-            let mut int4_packed = QuantizedTensorInt4::from_f32(&weight.data, weight.shape.clone()).unwrap();
+            let mut int4_packed =
+                QuantizedTensorInt4::from_f32(&weight.data, weight.shape.clone()).unwrap();
             int4_packed.pack();
             let int4_packed_size = int4_packed.size_bytes();
             let int4_packed_error = int4_packed.quantization_error(&weight.data);
 
             println!("    FP32:          {:7} bytes", fp32_size);
-            println!("    INT8:          {:7} bytes ({:.1}x) MSE: {:.8}",
-                    int8_size, fp32_size as f32 / int8_size as f32, int8_error);
-            println!("    INT4 unpacked: {:7} bytes ({:.1}x) MSE: {:.8}",
-                    int4_unpacked_size, fp32_size as f32 / int4_unpacked_size as f32, int4_error);
-            println!("    INT4 packed:   {:7} bytes ({:.1}x) MSE: {:.8}",
-                    int4_packed_size, fp32_size as f32 / int4_packed_size as f32, int4_packed_error);
+            println!(
+                "    INT8:          {:7} bytes ({:.1}x) MSE: {:.8}",
+                int8_size,
+                fp32_size as f32 / int8_size as f32,
+                int8_error
+            );
+            println!(
+                "    INT4 unpacked: {:7} bytes ({:.1}x) MSE: {:.8}",
+                int4_unpacked_size,
+                fp32_size as f32 / int4_unpacked_size as f32,
+                int4_error
+            );
+            println!(
+                "    INT4 packed:   {:7} bytes ({:.1}x) MSE: {:.8}",
+                int4_packed_size,
+                fp32_size as f32 / int4_packed_size as f32,
+                int4_packed_error
+            );
 
             assert_eq!(int4_error, int4_packed_error, "Packing changed error!");
 
             let int8_ratio = fp32_size as f32 / int8_size as f32;
             let int4_ratio = fp32_size as f32 / int4_packed_size as f32;
 
-            assert!((int8_ratio - 4.0).abs() < 0.1, "INT8 compression should be ~4x");
-            assert!((int4_ratio - 8.0).abs() < 0.1, "INT4 compression should be ~8x");
+            assert!(
+                (int8_ratio - 4.0).abs() < 0.1,
+                "INT8 compression should be ~4x"
+            );
+            assert!(
+                (int4_ratio - 8.0).abs() < 0.1,
+                "INT4 compression should be ~8x"
+            );
 
             println!();
         }
@@ -1610,7 +1791,8 @@ mod tests {
         println!("\n{}", "=".repeat(60));
 
         // Test per-channel on Conv layers (multi-dimensional)
-        let conv_weights: Vec<_> = weights.iter()
+        let conv_weights: Vec<_> = weights
+            .iter()
             .filter(|w| w.shape.len() >= 2 && w.shape[0] > 1)
             .take(3)
             .collect();
@@ -1628,27 +1810,34 @@ mod tests {
                 };
 
                 println!("[{}] {}", idx + 1, name);
-                println!("    Shape: {:?}, Channels: {}", weight.shape, weight.shape[0]);
+                println!(
+                    "    Shape: {:?}, Channels: {}",
+                    weight.shape, weight.shape[0]
+                );
 
-                let per_tensor = QuantizedTensorInt4::from_f32(&weight.data, weight.shape.clone()).unwrap();
+                let per_tensor =
+                    QuantizedTensorInt4::from_f32(&weight.data, weight.shape.clone()).unwrap();
                 let per_tensor_error = per_tensor.quantization_error(&weight.data);
 
-                let per_channel_result = QuantizedTensorInt4::from_f32_per_channel(
-                    &weight.data,
-                    weight.shape.clone(),
-                );
+                let per_channel_result =
+                    QuantizedTensorInt4::from_f32_per_channel(&weight.data, weight.shape.clone());
 
                 if let Ok(per_channel) = per_channel_result {
                     let per_channel_error = per_channel.quantization_error(&weight.data);
 
-                    let improvement = ((per_tensor_error - per_channel_error) / per_tensor_error) * 100.0;
+                    let improvement =
+                        ((per_tensor_error - per_channel_error) / per_tensor_error) * 100.0;
 
                     println!("    Per-tensor:  MSE: {:.8}", per_tensor_error);
-                    println!("    Per-channel: MSE: {:.8} ({:.1}% better)",
-                            per_channel_error, improvement);
+                    println!(
+                        "    Per-channel: MSE: {:.8} ({:.1}% better)",
+                        per_channel_error, improvement
+                    );
 
-                    assert!(per_channel_error <= per_tensor_error * 1.1,
-                        "Per-channel should not be significantly worse");
+                    assert!(
+                        per_channel_error <= per_tensor_error * 1.1,
+                        "Per-channel should not be significantly worse"
+                    );
                 } else {
                     println!("    Per-channel failed!");
                 }
@@ -1678,7 +1867,11 @@ mod tests {
         let result = QuantizedTensor::from_f32(&data, vec![3]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("non-finite"), "error should mention non-finite: {}", err);
+        assert!(
+            err.contains("non-finite"),
+            "error should mention non-finite: {}",
+            err
+        );
     }
 
     #[test]
@@ -1701,7 +1894,11 @@ mod tests {
         let result = QuantizedTensor::from_f32_per_channel(&data, vec![2, 3]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("Channel 0"), "error should mention channel: {}", err);
+        assert!(
+            err.contains("Channel 0"),
+            "error should mention channel: {}",
+            err
+        );
     }
 
     #[test]

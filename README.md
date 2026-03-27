@@ -23,7 +23,7 @@ quantize-rs converts float32 ONNX models to INT8 or INT4 representation using po
 - **Python bindings** -- via PyO3; install with `pip install quantization-rs`
 - **Typed error handling** -- `QuantizeError` enum at all public API boundaries (no more string-parsing `anyhow` errors)
 - **Rust library** -- usable as a crate dependency; all public items have doc comments
-- **Property-based tests** -- 15 proptest cases covering quantization round-trips, error bounds, and bit-packing
+- **Property-based tests** -- 17 proptest cases covering quantization round-trips, error bounds, and bit-packing
 - **Criterion benchmarks** -- throughput and per-channel comparison benchmarks in `benches/`
 
 ## Installation
@@ -53,7 +53,7 @@ cargo install quantize-rs
 
 ```toml
 [dependencies]
-quantize-rs = "0.6"
+quantize-rs = "0.7"
 ```
 
 ## Quick start
@@ -296,7 +296,7 @@ output = session.run(None, {input_name: x})
 ## Testing
 
 ```bash
-# Rust tests (90 passing: 63 unit + 12 integration + 15 property-based)
+# Rust tests (106 passing: 71 unit + 18 integration + 17 property-based)
 cargo test
 
 # With output

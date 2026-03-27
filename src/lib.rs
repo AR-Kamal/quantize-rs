@@ -18,21 +18,27 @@
 //! - **`calibration`** *(default)* -- enables activation-based calibration (adds `tract-onnx`, `ndarray`)
 //! - **`python`** -- enables PyO3 bindings (`quantize_rs` Python module)
 
+pub mod calibration;
+pub mod config;
 pub mod errors;
+/// Raw prost-generated ONNX protobuf types.  Use the higher-level wrappers
+/// in [`onnx_utils`] instead — this module is an implementation detail and
+/// may change without notice.
+#[doc(hidden)]
 pub mod onnx_proto;
 pub mod onnx_utils;
 pub mod quantization;
-pub mod config;
-pub mod calibration;
 
-pub use errors::QuantizeError;
-pub use onnx_utils::{ModelInfo, OnnxModel, WeightTensor, QuantizedWeightInfo, ConnectivityReport};
-pub use onnx_utils::graph_builder::QdqWeightInput;
-pub use quantization::{Quantizer, QuantConfig, QuantParams, pack_int4, unpack_int4};
-pub use config::Config;
-pub use calibration::{CalibrationDataset, stats::ActivationStats};
+// ---- Stable public re-exports (prefer these over reaching into submodules) ----
+
 #[cfg(feature = "calibration")]
 pub use calibration::inference::ActivationEstimator;
+pub use calibration::{stats::ActivationStats, CalibrationDataset};
+pub use config::Config;
+pub use errors::QuantizeError;
+pub use onnx_utils::graph_builder::QdqWeightInput;
+pub use onnx_utils::{ConnectivityReport, ModelInfo, OnnxModel, QuantizedWeightInfo, WeightTensor};
+pub use quantization::{pack_int4, unpack_int4, QuantConfig, QuantParams, Quantizer};
 
 /// Library version string, read from `Cargo.toml` at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

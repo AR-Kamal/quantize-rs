@@ -29,15 +29,25 @@ pub struct ActivationStats {
 
 impl ActivationStats {
     /// Minimum observed value.
-    pub fn min(&self) -> f32 { self.min }
+    pub fn min(&self) -> f32 {
+        self.min
+    }
     /// Maximum observed value.
-    pub fn max(&self) -> f32 { self.max }
+    pub fn max(&self) -> f32 {
+        self.max
+    }
     /// Running mean.
-    pub fn mean(&self) -> f32 { self.mean }
+    pub fn mean(&self) -> f32 {
+        self.mean
+    }
     /// Running standard deviation.
-    pub fn std(&self) -> f32 { self.std }
+    pub fn std(&self) -> f32 {
+        self.std
+    }
     /// Number of observations.
-    pub fn count(&self) -> usize { self.count }
+    pub fn count(&self) -> usize {
+        self.count
+    }
 }
 
 impl ActivationStats {
@@ -58,9 +68,7 @@ impl ActivationStats {
         let sum: f32 = finite.iter().sum();
         let mean = sum / finite.len() as f32;
 
-        let m2: f64 = finite.iter()
-            .map(|&x| ((x - mean) as f64).powi(2))
-            .sum();
+        let m2: f64 = finite.iter().map(|&x| ((x - mean) as f64).powi(2)).sum();
         let std = (m2 / finite.len() as f64).sqrt() as f32;
 
         let histogram_bins = build_histogram(data, min, max);
@@ -84,8 +92,14 @@ impl ActivationStats {
             return;
         }
 
-        let data_min = data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
-        let data_max = data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
+        // Only consider finite values — skip batches that are entirely NaN/Inf
+        let finite: Vec<f32> = data.iter().copied().filter(|v| v.is_finite()).collect();
+        if finite.is_empty() {
+            return;
+        }
+
+        let data_min = finite.iter().copied().fold(f32::INFINITY, f32::min);
+        let data_max = finite.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 
         let new_min = self.min.min(data_min);
         let new_max = self.max.max(data_max);
@@ -93,13 +107,14 @@ impl ActivationStats {
         // Parallel/batch variant of Welford's online algorithm:
         // Merge two populations (existing stats + new batch) into combined stats.
         let old_count = self.count as f64;
-        let new_count = data.len() as f64;
+        let new_count = finite.len() as f64;
         let combined_count = old_count + new_count;
 
-        let data_sum: f64 = data.iter().map(|&x| x as f64).sum();
+        let data_sum: f64 = finite.iter().map(|&x| x as f64).sum();
         let data_mean = data_sum / new_count;
 
-        let data_m2: f64 = data.iter()
+        let data_m2: f64 = finite
+            .iter()
             .map(|&x| ((x as f64) - data_mean).powi(2))
             .sum();
 
@@ -114,14 +129,21 @@ impl ActivationStats {
         // If range expanded, re-bin existing data into the new range
         if new_min < self.hist_min || new_max > self.hist_max {
             let mut rebinned = vec![0usize; NUM_BINS];
-            rebin(&self.histogram_bins, self.hist_min, self.hist_max, &mut rebinned, new_min, new_max);
+            rebin(
+                &self.histogram_bins,
+                self.hist_min,
+                self.hist_max,
+                &mut rebinned,
+                new_min,
+                new_max,
+            );
             self.histogram_bins = rebinned;
             self.hist_min = new_min;
             self.hist_max = new_max;
         }
 
-        // Add new data into bins
-        let new_hist = build_histogram(data, self.hist_min, self.hist_max);
+        // Add new data into bins (build_histogram already filters NaN/Inf internally)
+        let new_hist = build_histogram(&finite, self.hist_min, self.hist_max);
         for (i, &c) in new_hist.iter().enumerate() {
             self.histogram_bins[i] += c;
         }
@@ -172,7 +194,8 @@ impl ActivationStats {
             return Vec::new();
         }
         let bin_size = (self.hist_max - self.hist_min) / NUM_BINS as f32;
-        self.histogram_bins.iter()
+        self.histogram_bins
+            .iter()
             .enumerate()
             .filter(|(_, &count)| count > 0)
             .map(|(i, &count)| {
@@ -214,7 +237,9 @@ fn build_histogram(data: &[f32], min: f32, max: f32) -> Vec<usize> {
     let bin_size = (max - min) / NUM_BINS as f32;
 
     for &value in data {
-        if !value.is_finite() { continue; }
+        if !value.is_finite() {
+            continue;
+        }
         let bin_idx = ((value - min) / bin_size).floor() as usize;
         let bin_idx = bin_idx.min(NUM_BINS - 1);
         bins[bin_idx] += 1;
@@ -251,7 +276,9 @@ fn rebin(
     let old_bin_size = old_range / old_bins.len() as f32;
     let new_bin_count = new_bins.len();
     for (i, &count) in old_bins.iter().enumerate() {
-        if count == 0 { continue; }
+        if count == 0 {
+            continue;
+        }
         let center = old_min + (i as f32 + 0.5) * old_bin_size;
         let new_idx = ((center - new_min) / new_range * new_bin_count as f32).floor() as usize;
         let new_idx = new_idx.min(new_bin_count - 1);
@@ -278,18 +305,23 @@ mod tests {
 }
 
 /// Compute the optimal quantization range for `data` using the given method.
-pub fn calculate_optimal_range(
-    data: &[f32],
-    method: CalibrationMethod,
-) -> (f32, f32) {
+pub fn calculate_optimal_range(data: &[f32], method: CalibrationMethod) -> (f32, f32) {
     if data.is_empty() {
         return (0.0, 0.0);
     }
 
     match method {
         CalibrationMethod::MinMax => {
-            let min = data.iter().copied().filter(|v| v.is_finite()).fold(f32::INFINITY, f32::min);
-            let max = data.iter().copied().filter(|v| v.is_finite()).fold(f32::NEG_INFINITY, f32::max);
+            let min = data
+                .iter()
+                .copied()
+                .filter(|v| v.is_finite())
+                .fold(f32::INFINITY, f32::min);
+            let max = data
+                .iter()
+                .copied()
+                .filter(|v| v.is_finite())
+                .fold(f32::NEG_INFINITY, f32::max);
             (min, max)
         }
 
@@ -300,13 +332,9 @@ pub fn calculate_optimal_range(
             (lower, upper)
         }
 
-        CalibrationMethod::Entropy => {
-            optimize_kl_divergence(data)
-        }
+        CalibrationMethod::Entropy => optimize_kl_divergence(data),
 
-        CalibrationMethod::MSE => {
-            optimize_mse(data)
-        }
+        CalibrationMethod::MSE => optimize_mse(data),
     }
 }
 
@@ -410,14 +438,16 @@ fn calculate_quantization_mse(data: &[f32], min: f32, max: f32) -> f32 {
 
     let scale = (max - min) / 255.0;
 
-    let mse: f32 = data.iter()
+    let mse: f32 = data
+        .iter()
         .map(|&v| {
             let clipped = v.clamp(min, max);
-            let q = ((clipped - min) / scale).round();
+            let q = ((clipped - min) / scale).round().clamp(0.0, 255.0);
             let dequantized = min + q * scale;
             (v - dequantized).powi(2)
         })
-        .sum::<f32>() / data.len() as f32;
+        .sum::<f32>()
+        / data.len() as f32;
 
     mse
 }

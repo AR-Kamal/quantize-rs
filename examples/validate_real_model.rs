@@ -76,18 +76,27 @@ fn main() -> anyhow::Result<()> {
     let info = model.info();
 
     let file_bytes = std::fs::metadata(&args.input)?.len() as usize;
-    println!("  graph: \"{}\"  nodes: {}  inputs: {:?}  outputs: {:?}",
-        info.name, info.num_nodes, info.inputs, info.outputs);
+    println!(
+        "  graph: \"{}\"  nodes: {}  inputs: {:?}  outputs: {:?}",
+        info.name, info.num_nodes, info.inputs, info.outputs
+    );
     println!("  file size: {}", fmt_bytes(file_bytes));
 
     // ------------------------------------------------------------------
     // Extract weights
     // ------------------------------------------------------------------
     let weights = model.extract_weights();
-    println!("\nFound {} weight tensors ({} will be quantized, {} skipped by min_elements={})\n",
+    println!(
+        "\nFound {} weight tensors ({} will be quantized, {} skipped by min_elements={})\n",
         weights.len(),
-        weights.iter().filter(|w| w.data.len() >= args.min_elements).count(),
-        weights.iter().filter(|w| w.data.len() < args.min_elements).count(),
+        weights
+            .iter()
+            .filter(|w| w.data.len() >= args.min_elements)
+            .count(),
+        weights
+            .iter()
+            .filter(|w| w.data.len() < args.min_elements)
+            .count(),
         args.min_elements,
     );
 
@@ -99,8 +108,10 @@ fn main() -> anyhow::Result<()> {
 
     // Column header
     let onnx_col = if int4_mode { "ONNX bytes" } else { "Quantized" };
-    println!("{:<40}  {:>10}  {:>10}  {:>10}  {:>10}  {:>8}",
-        "Tensor name", "Elements", "FP32", onnx_col, "MAE", "Bits");
+    println!(
+        "{:<40}  {:>10}  {:>10}  {:>10}  {:>10}  {:>8}",
+        "Tensor name", "Elements", "FP32", onnx_col, "MAE", "Bits"
+    );
     println!("{}", "-".repeat(100));
 
     // ------------------------------------------------------------------
@@ -129,7 +140,8 @@ fn main() -> anyhow::Result<()> {
         total_elements += w.data.len();
 
         if !config.should_quantize(&w.name, w.data.len()) {
-            println!("{:<40}  {:>10}  {:>10}  {:>10}  {:>10}  {:>8}",
+            println!(
+                "{:<40}  {:>10}  {:>10}  {:>10}  {:>10}  {:>8}",
                 truncate(&w.name, 40),
                 fmt_count(w.data.len()),
                 fmt_bytes(fp32_bytes),
@@ -149,7 +161,8 @@ fn main() -> anyhow::Result<()> {
         let mae = quantized.quantization_error(&w.data);
         let bits_used = quantized.bits();
 
-        println!("{:<40}  {:>10}  {:>10}  {:>10}  {:>10.2e}  {:>8}",
+        println!(
+            "{:<40}  {:>10}  {:>10}  {:>10}  {:>10.2e}  {:>8}",
             truncate(&w.name, 40),
             fmt_count(w.data.len()),
             fmt_bytes(fp32_bytes),
@@ -178,15 +191,22 @@ fn main() -> anyhow::Result<()> {
     // ------------------------------------------------------------------
     println!("{}", "-".repeat(100));
     println!("\nSummary");
-    println!("  Total tensors : {} ({} quantized, {} skipped)",
-        weights.len(), qdq_data.len(), skipped);
+    println!(
+        "  Total tensors : {} ({} quantized, {} skipped)",
+        weights.len(),
+        qdq_data.len(),
+        skipped
+    );
     println!("  Total elements: {}", fmt_count(total_elements));
     println!("  FP32 weight bytes    : {}", fmt_bytes(total_fp32_bytes));
     println!("  ONNX storage (actual): {}", fmt_bytes(total_onnx_bytes));
     if total_fp32_bytes > 0 {
         let ratio = total_onnx_bytes as f64 / total_fp32_bytes as f64;
-        println!("  Compression ratio    : {:.1}x  ({:.1}% of original)",
-            1.0 / ratio, ratio * 100.0);
+        println!(
+            "  Compression ratio    : {:.1}x  ({:.1}% of original)",
+            1.0 / ratio,
+            ratio * 100.0
+        );
     }
     if int4_mode && total_packed_bytes < total_onnx_bytes {
         let ratio = total_packed_bytes as f64 / total_fp32_bytes as f64;
@@ -218,7 +238,10 @@ fn main() -> anyhow::Result<()> {
             if report.valid {
                 println!("  Connectivity: OK");
             } else {
-                println!("  Connectivity: BROKEN ({} broken refs)", report.broken_refs.len());
+                println!(
+                    "  Connectivity: BROKEN ({} broken refs)",
+                    report.broken_refs.len()
+                );
                 for r in &report.broken_refs {
                     println!("    - {r}");
                 }

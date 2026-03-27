@@ -14,9 +14,9 @@ use crate::errors::{QuantizeError, Result};
 use std::collections::HashMap;
 use tract_onnx::prelude::*;
 
-use crate::onnx_utils::OnnxModel;
 use crate::calibration::stats::ActivationStats;
 use crate::calibration::CalibrationDataset;
+use crate::onnx_utils::OnnxModel;
 
 // ===========================================================================
 // Public API
@@ -68,11 +68,11 @@ impl ActivationEstimator {
     /// programmatically or the file no longer exists, this will fail.
     pub fn from_path(model: OnnxModel, onnx_path: &str) -> Result<Self> {
         // --- Load with tract ---
-        let mut tract_model = tract_onnx::onnx()
-            .model_for_path(onnx_path)
-            .map_err(|e| QuantizeError::Calibration { reason: format!("tract failed to load ONNX model '{}': {e}", onnx_path) })?;
-
-
+        let mut tract_model = tract_onnx::onnx().model_for_path(onnx_path).map_err(|e| {
+            QuantizeError::Calibration {
+                reason: format!("tract failed to load ONNX model '{}': {e}", onnx_path),
+            }
+        })?;
 
         // --- Expose all intermediate layer outputs ---
         // tract optimizes aggressively and fuses layers. To get per-layer stats,
@@ -105,9 +105,12 @@ impl ActivationEstimator {
         }
 
         // --- Optimize and prepare for inference ---
-        let optimized_model = tract_model
-            .into_optimized()
-            .map_err(|e| QuantizeError::Calibration { reason: format!("tract optimization failed: {e}") })?;
+        let optimized_model =
+            tract_model
+                .into_optimized()
+                .map_err(|e| QuantizeError::Calibration {
+                    reason: format!("tract optimization failed: {e}"),
+                })?;
 
         // Collect output names AFTER optimization, since optimization may
         // renumber/rename nodes. Use the optimized model's output outlets
@@ -118,9 +121,12 @@ impl ActivationEstimator {
             output_names.push(node.name.clone());
         }
 
-        let tract_model = optimized_model
-            .into_runnable()
-            .map_err(|e| QuantizeError::Calibration { reason: format!("tract failed to create runnable plan: {e}") })?;
+        let tract_model =
+            optimized_model
+                .into_runnable()
+                .map_err(|e| QuantizeError::Calibration {
+                    reason: format!("tract failed to create runnable plan: {e}"),
+                })?;
 
         Ok(Self {
             model,
@@ -145,10 +151,15 @@ impl ActivationEstimator {
     /// Progress is printed every 10 batches.
     pub fn calibrate(&mut self, dataset: &CalibrationDataset) -> Result<()> {
         if dataset.is_empty() {
-            return Err(QuantizeError::Calibration { reason: "Calibration dataset is empty".into() });
+            return Err(QuantizeError::Calibration {
+                reason: "Calibration dataset is empty".into(),
+            });
         }
 
-        println!("Running activation-based calibration on {} samples...", dataset.len());
+        println!(
+            "Running activation-based calibration on {} samples...",
+            dataset.len()
+        );
 
         let num_samples = dataset.len();
 
@@ -161,7 +172,10 @@ impl ActivationEstimator {
             }
         }
 
-        println!("✓ Calibration complete: {} layers tracked", self.layer_stats.len());
+        println!(
+            "✓ Calibration complete: {} layers tracked",
+            self.layer_stats.len()
+        );
         Ok(())
     }
 
@@ -174,16 +188,20 @@ impl ActivationEstimator {
         let mut input_shape = vec![1]; // batch size
         input_shape.extend_from_slice(shape);
 
-        let input_tensor = tract_core::prelude::Tensor::from_shape(
-            &input_shape,
-            sample,
-        ).map_err(|e| QuantizeError::Calibration { reason: format!("Failed to create input tensor from calibration sample: {e}") })?;
+        let input_tensor =
+            tract_core::prelude::Tensor::from_shape(&input_shape, sample).map_err(|e| {
+                QuantizeError::Calibration {
+                    reason: format!("Failed to create input tensor from calibration sample: {e}"),
+                }
+            })?;
 
         // --- Run inference ---
         let outputs = self
             .tract_model
             .run(tvec!(input_tensor.into()))
-            .map_err(|e| QuantizeError::Calibration { reason: format!("tract inference failed on calibration sample: {e}") })?;
+            .map_err(|e| QuantizeError::Calibration {
+                reason: format!("tract inference failed on calibration sample: {e}"),
+            })?;
 
         // --- Update statistics for each output ---
         for (output_idx, tvalue) in outputs.iter().enumerate() {
@@ -272,11 +290,16 @@ fn extract_f32_data(tensor: &Tensor) -> Result<Vec<f32>> {
             // Not f32: try to cast
             let tensor_f32 = tensor
                 .cast_to::<f32>()
-                .map_err(|e| QuantizeError::Calibration { reason: format!("Failed to cast tensor to f32 for activation statistics: {e}") })?;
+                .map_err(|e| QuantizeError::Calibration {
+                    reason: format!("Failed to cast tensor to f32 for activation statistics: {e}"),
+                })?;
 
-            let view = tensor_f32
-                .to_array_view::<f32>()
-                .map_err(|e| QuantizeError::Calibration { reason: format!("Tensor cast succeeded but array view failed: {e}") })?;
+            let view =
+                tensor_f32
+                    .to_array_view::<f32>()
+                    .map_err(|e| QuantizeError::Calibration {
+                        reason: format!("Tensor cast succeeded but array view failed: {e}"),
+                    })?;
 
             Ok(view.iter().copied().collect())
         }
@@ -314,7 +337,9 @@ mod tests {
         let model_path = match found_path {
             Some(p) => p,
             None => {
-                println!("No test model found. Place mnist.onnx or resnet18-v1-7.onnx in project root.");
+                println!(
+                    "No test model found. Place mnist.onnx or resnet18-v1-7.onnx in project root."
+                );
                 return;
             }
         };
@@ -350,7 +375,10 @@ mod tests {
         for (name, stat) in stats.iter().take(5) {
             println!(
                 "  {}: min={:.4}, max={:.4}, mean={:.4}",
-                name, stat.min(), stat.max(), stat.mean()
+                name,
+                stat.min(),
+                stat.max(),
+                stat.mean()
             );
         }
 

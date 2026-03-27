@@ -105,30 +105,38 @@ impl Config {
     /// Returns [`QuantizeError::Config`] on I/O, parse, or unsupported format errors.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let extension = path.extension()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| QuantizeError::Config { reason: "Config file has no extension".into() })?;
+        let extension =
+            path.extension()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| QuantizeError::Config {
+                    reason: "Config file has no extension".into(),
+                })?;
 
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| QuantizeError::Config { reason: format!("Failed to read config file '{}': {e}", path.display()) })?;
+        let content = std::fs::read_to_string(path).map_err(|e| QuantizeError::Config {
+            reason: format!("Failed to read config file '{}': {e}", path.display()),
+        })?;
 
         match extension {
             "yaml" | "yml" => Self::from_yaml(&content),
             "toml" => Self::from_toml(&content),
-            _ => Err(QuantizeError::Config { reason: format!("Unsupported config format: {}", extension) }),
+            _ => Err(QuantizeError::Config {
+                reason: format!("Unsupported config format: {}", extension),
+            }),
         }
     }
 
     /// Parse configuration from a YAML string.
     pub fn from_yaml(content: &str) -> Result<Self> {
-        serde_yaml::from_str(content)
-            .map_err(|e| QuantizeError::Config { reason: format!("Failed to parse YAML config: {e}") })
+        serde_yaml::from_str(content).map_err(|e| QuantizeError::Config {
+            reason: format!("Failed to parse YAML config: {e}"),
+        })
     }
 
     /// Parse configuration from a TOML string.
     pub fn from_toml(content: &str) -> Result<Self> {
-        toml::from_str(content)
-            .map_err(|e| QuantizeError::Config { reason: format!("Failed to parse TOML config: {e}") })
+        toml::from_str(content).map_err(|e| QuantizeError::Config {
+            reason: format!("Failed to parse TOML config: {e}"),
+        })
     }
 
     /// Validate the configuration (bits values, non-empty paths).
@@ -138,34 +146,56 @@ impl Config {
     /// Returns [`QuantizeError::Config`] if any field is invalid.
     pub fn validate(&self) -> Result<()> {
         if self.bits != 4 && self.bits != 8 {
-            return Err(QuantizeError::Config { reason: format!("Invalid bits value: {}. Must be 4 or 8", self.bits) });
+            return Err(QuantizeError::Config {
+                reason: format!("Invalid bits value: {}. Must be 4 or 8", self.bits),
+            });
         }
 
         for (idx, model) in self.models.iter().enumerate() {
             if model.input.is_empty() {
-                return Err(QuantizeError::Config { reason: format!("Model {}: input path is empty", idx) });
+                return Err(QuantizeError::Config {
+                    reason: format!("Model {}: input path is empty", idx),
+                });
             }
             if model.output.is_empty() {
-                return Err(QuantizeError::Config { reason: format!("Model {}: output path is empty", idx) });
+                return Err(QuantizeError::Config {
+                    reason: format!("Model {}: output path is empty", idx),
+                });
             }
             if let Some(bits) = model.bits {
                 if bits != 4 && bits != 8 {
-                    return Err(QuantizeError::Config { reason: format!("Model {}: invalid bits value: {}", idx, bits) });
+                    return Err(QuantizeError::Config {
+                        reason: format!("Model {}: invalid bits value: {}", idx, bits),
+                    });
                 }
             }
             for (layer, &bits) in &model.layer_bits {
+                if layer.is_empty() {
+                    return Err(QuantizeError::Config {
+                        reason: format!("Model {}: layer_bits contains an empty layer name", idx),
+                    });
+                }
                 if bits != 4 && bits != 8 {
-                    return Err(QuantizeError::Config { reason: format!("Model {}: invalid bits {} for layer '{}'", idx, bits, layer) });
+                    return Err(QuantizeError::Config {
+                        reason: format!(
+                            "Model {}: invalid bits {} for layer '{}'",
+                            idx, bits, layer
+                        ),
+                    });
                 }
             }
         }
 
         if let Some(batch) = &self.batch {
             if batch.input_dir.is_empty() {
-                return Err(QuantizeError::Config { reason: "Batch input_dir is empty".into() });
+                return Err(QuantizeError::Config {
+                    reason: "Batch input_dir is empty".into(),
+                });
             }
             if batch.output_dir.is_empty() {
-                return Err(QuantizeError::Config { reason: "Batch output_dir is empty".into() });
+                return Err(QuantizeError::Config {
+                    reason: "Batch output_dir is empty".into(),
+                });
             }
         }
 
@@ -236,6 +266,22 @@ batch:
         assert!(config.per_channel);
         assert_eq!(config.models.len(), 2);
         assert!(config.batch.is_some());
+    }
+
+    #[test]
+    fn test_empty_layer_bits_key_rejected() {
+        let yaml = r#"
+bits: 8
+models:
+  - input: model.onnx
+    output: out.onnx
+    layer_bits:
+      "": 4
+"#;
+        let config = Config::from_yaml(yaml).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, crate::errors::QuantizeError::Config { .. }));
+        assert!(err.to_string().contains("empty layer name"));
     }
 
     #[test]

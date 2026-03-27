@@ -5,8 +5,8 @@
 //! Run with: cargo run --example basic_quantization
 
 use anyhow::Result;
-use quantize_rs::{OnnxModel, QuantConfig, Quantizer};
 use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
+use quantize_rs::{OnnxModel, QuantConfig, Quantizer};
 
 fn main() -> Result<()> {
     println!("=== Basic Quantization Example ===\n");

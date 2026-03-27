@@ -8,7 +8,9 @@ mod cli;
 use cli::commands;
 
 fn parse_bits(s: &str) -> Result<u8, String> {
-    let bits: u8 = s.parse().map_err(|_| format!("'{}' is not a valid number", s))?;
+    let bits: u8 = s
+        .parse()
+        .map_err(|_| format!("'{}' is not a valid number", s))?;
     if bits == 4 || bits == 8 {
         Ok(bits)
     } else {
@@ -21,18 +23,23 @@ fn parse_bits(s: &str) -> Result<u8, String> {
 fn parse_calibration_method(s: &str) -> Result<String, String> {
     match s.to_lowercase().as_str() {
         "minmax" | "percentile" | "entropy" | "mse" => Ok(s.to_string()),
-        _ => Err(format!("unknown method '{}'; valid: minmax, percentile, entropy, mse", s)),
+        _ => Err(format!(
+            "unknown method '{}'; valid: minmax, percentile, entropy, mse",
+            s
+        )),
     }
 }
 
 /// Parse a single `NAME=BITS` layer-bits override (e.g. `conv1.weight=4`).
 fn parse_layer_bits(s: &str) -> Result<(String, u8), String> {
-    let (name, bits_str) = s.split_once('=')
+    let (name, bits_str) = s
+        .split_once('=')
         .ok_or_else(|| format!("expected NAME=BITS (e.g. conv1.weight=4), got '{}'", s))?;
     if name.is_empty() {
         return Err("layer name must not be empty".into());
     }
-    let bits: u8 = bits_str.parse()
+    let bits: u8 = bits_str
+        .parse()
         .map_err(|_| format!("'{}' is not a valid bit width", bits_str))?;
     if bits != 4 && bits != 8 {
         return Err(format!("bits must be 4 or 8, got {}", bits));
@@ -166,13 +173,17 @@ enum Commands {
         #[arg(long, default_value = "percentile", value_parser = parse_calibration_method)]
         method: String,
     },
-
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    println!("{}", format!("quantize-rs v{}", env!("CARGO_PKG_VERSION")).bold().cyan());
+    println!(
+        "{}",
+        format!("quantize-rs v{}", env!("CARGO_PKG_VERSION"))
+            .bold()
+            .cyan()
+    );
     println!();
 
     match cli.command {
@@ -186,7 +197,15 @@ fn main() -> Result<()> {
             layer_bits,
         } => {
             let layer_bits_map: HashMap<String, u8> = layer_bits.into_iter().collect();
-            commands::quantize(&input, &output, bits, per_channel, &excluded_layers, min_elements, &layer_bits_map)?;
+            commands::quantize(
+                &input,
+                &output,
+                bits,
+                per_channel,
+                &excluded_layers,
+                min_elements,
+                &layer_bits_map,
+            )?;
         }
         Commands::Batch {
             inputs,
@@ -200,7 +219,17 @@ fn main() -> Result<()> {
             layer_bits,
         } => {
             let layer_bits_map: HashMap<String, u8> = layer_bits.into_iter().collect();
-            commands::batch(&inputs, &output, bits, per_channel, skip_existing, continue_on_error, &excluded_layers, min_elements, &layer_bits_map)?;
+            commands::batch(
+                &inputs,
+                &output,
+                bits,
+                per_channel,
+                skip_existing,
+                continue_on_error,
+                &excluded_layers,
+                min_elements,
+                &layer_bits_map,
+            )?;
         }
         Commands::Validate {
             original,
@@ -218,7 +247,10 @@ fn main() -> Result<()> {
         } => {
             commands::benchmark(&original, &quantized)?;
         }
-        Commands::Config { config_file, dry_run } => {
+        Commands::Config {
+            config_file,
+            dry_run,
+        } => {
             commands::run_config(&config_file, dry_run)?;
         }
 

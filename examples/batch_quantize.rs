@@ -5,8 +5,8 @@
 //! Run with: cargo run --example batch_quantize
 
 use anyhow::Result;
-use quantize_rs::{OnnxModel, QuantConfig, Quantizer};
 use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
+use quantize_rs::{OnnxModel, QuantConfig, Quantizer};
 use std::path::Path;
 
 fn quantize_model(input_path: &str, output_path: &str) -> Result<()> {

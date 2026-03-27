@@ -53,9 +53,7 @@ fn bench_quantize_throughput(c: &mut Criterion) {
         group.throughput(Throughput::Elements(n as u64));
 
         group.bench_with_input(BenchmarkId::new("int8", n), &data, |b, d| {
-            b.iter(|| {
-                QuantizedTensor::from_f32(black_box(d), black_box(shape.clone())).unwrap()
-            });
+            b.iter(|| QuantizedTensor::from_f32(black_box(d), black_box(shape.clone())).unwrap());
         });
 
         group.bench_with_input(BenchmarkId::new("int4", n), &data, |b, d| {
@@ -85,9 +83,7 @@ fn bench_per_channel_vs_per_tensor(c: &mut Criterion) {
     group.throughput(Throughput::Elements(n as u64));
 
     group.bench_function("int8_per_tensor", |b| {
-        b.iter(|| {
-            QuantizedTensor::from_f32(black_box(&data), black_box(shape.clone())).unwrap()
-        });
+        b.iter(|| QuantizedTensor::from_f32(black_box(&data), black_box(shape.clone())).unwrap());
     });
 
     group.bench_function("int8_per_channel", |b| {

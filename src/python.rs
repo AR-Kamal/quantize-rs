@@ -6,15 +6,15 @@
 //!   - quantize_with_calibration() — activation-based calibration
 //!   - model_info() — get model metadata
 
-use pyo3::prelude::*;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::prelude::*;
 
-use crate::onnx_utils::OnnxModel;
+#[cfg(feature = "calibration")]
+use crate::calibration::{methods::CalibrationMethod, ActivationEstimator, CalibrationDataset};
 use crate::onnx_utils::graph_builder::QdqWeightInput;
+use crate::onnx_utils::OnnxModel;
 use crate::quantization::{QuantConfig, Quantizer};
 use rayon::prelude::*;
-#[cfg(feature = "calibration")]
-use crate::calibration::{CalibrationDataset, ActivationEstimator, methods::CalibrationMethod};
 
 // ===========================================================================
 // Python-exposed types
@@ -68,7 +68,10 @@ fn quantize(
     layer_bits: Option<std::collections::HashMap<String, u8>>,
 ) -> PyResult<()> {
     if bits != 4 && bits != 8 {
-        return Err(PyValueError::new_err(format!("bits must be 4 or 8, got {}", bits)));
+        return Err(PyValueError::new_err(format!(
+            "bits must be 4 or 8, got {}",
+            bits
+        )));
     }
 
     // Load model
@@ -91,18 +94,21 @@ fn quantize(
         layer_bits: layer_bits.unwrap_or_default(),
     };
 
-    let to_quantize: Vec<_> = weights.iter()
+    let to_quantize: Vec<_> = weights
+        .iter()
         .filter(|w| config.should_quantize(&w.name, w.data.len()))
         .collect();
 
-    let quantized_data: Vec<QdqWeightInput> = to_quantize.par_iter()
+    let quantized_data: Vec<QdqWeightInput> = to_quantize
+        .par_iter()
         .map(|weight| {
             let layer_config = QuantConfig {
                 bits: config.bits_for_layer(&weight.name),
                 ..config.clone()
             };
             let quantizer = Quantizer::new(layer_config);
-            let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())
+            let quantized = quantizer
+                .quantize_tensor(&weight.data, weight.shape.clone())
                 .map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
 
             let (scales, zero_points) = quantized.get_all_scales_zero_points();
@@ -110,18 +116,19 @@ fn quantize(
             let bits_used = quantized.bits();
 
             Ok(QdqWeightInput {
-                original_name:    weight.name.clone(),
+                original_name: weight.name.clone(),
                 quantized_values: quantized.data(),
                 scales,
                 zero_points,
-                bits:             bits_used,
-                axis:             if is_pc { Some(0) } else { None },
+                bits: bits_used,
+                axis: if is_pc { Some(0) } else { None },
             })
         })
         .collect::<PyResult<Vec<_>>>()?;
 
     // Save
-    model.save_quantized(&quantized_data, output_path)
+    model
+        .save_quantized(&quantized_data, output_path)
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to save model: {}", e)))?;
 
     Ok(())
@@ -170,11 +177,15 @@ fn quantize_with_calibration(
     sample_shape: Option<Vec<usize>>,
 ) -> PyResult<()> {
     if bits != 4 && bits != 8 {
-        return Err(PyValueError::new_err(format!("bits must be 4 or 8, got {}", bits)));
+        return Err(PyValueError::new_err(format!(
+            "bits must be 4 or 8, got {}",
+            bits
+        )));
     }
 
     // Parse calibration method
-    let calib_method: CalibrationMethod = method.parse()
+    let calib_method: CalibrationMethod = method
+        .parse()
         .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))?;
 
     // Load model (used for both shape detection and calibration)
@@ -183,16 +194,21 @@ fn quantize_with_calibration(
 
     // Load calibration data
     let dataset = if let Some(path) = calibration_data {
-        CalibrationDataset::from_numpy(path)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to load calibration data: {}", e)))?
+        CalibrationDataset::from_numpy(path).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to load calibration data: {}", e))
+        })?
     } else {
         // Use provided shape or auto-detect from model
         let shape = if let Some(s) = sample_shape {
             s
         } else {
-            model.input_shapes().into_iter().next()
+            model
+                .input_shapes()
+                .into_iter()
+                .next()
                 .and_then(|dims| {
-                    let shape: Vec<usize> = dims.into_iter()
+                    let shape: Vec<usize> = dims
+                        .into_iter()
                         .filter_map(|d| if d > 0 { Some(d as usize) } else { None })
                         .collect();
                     // Skip batch dimension if present
@@ -207,15 +223,17 @@ fn quantize_with_calibration(
                 .unwrap_or_else(|| vec![3, 224, 224])
         };
 
-        CalibrationDataset::random(shape, num_samples, (0.0, 1.0))
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create random dataset: {}", e)))?
+        CalibrationDataset::random(shape, num_samples, (0.0, 1.0)).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to create random dataset: {}", e))
+        })?
     };
 
     // Run calibration
     let mut estimator = ActivationEstimator::new(model, input_path)
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to create estimator: {}", e)))?;
 
-    estimator.calibrate(&dataset)
+    estimator
+        .calibrate(&dataset)
         .map_err(|e| PyRuntimeError::new_err(format!("Calibration failed: {}", e)))?;
 
     // Collect stats (borrowed) then recover the model without reloading
@@ -239,28 +257,27 @@ fn quantize_with_calibration(
 
     let mut quantized_data = Vec::new();
     for weight in &weights {
-        let quantized = quantizer.quantize_tensor_with_name(
-            &weight.name,
-            &weight.data,
-            weight.shape.clone(),
-        ).map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
+        let quantized = quantizer
+            .quantize_tensor_with_name(&weight.name, &weight.data, weight.shape.clone())
+            .map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
 
         let (scales, zero_points) = quantized.get_all_scales_zero_points();
         let is_pc = quantized.is_per_channel();
         let bits_used = quantized.bits();
 
         quantized_data.push(QdqWeightInput {
-            original_name:    weight.name.clone(),
+            original_name: weight.name.clone(),
             quantized_values: quantized.data(),
             scales,
             zero_points,
-            bits:             bits_used,
-            axis:             if is_pc { Some(0) } else { None },
+            bits: bits_used,
+            axis: if is_pc { Some(0) } else { None },
         });
     }
 
     // Save
-    model.save_quantized(&quantized_data, output_path)
+    model
+        .save_quantized(&quantized_data, output_path)
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to save model: {}", e)))?;
 
     Ok(())

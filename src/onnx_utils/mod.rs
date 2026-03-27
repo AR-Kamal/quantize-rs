@@ -7,8 +7,7 @@ pub mod quantization_nodes;
 
 use crate::errors::{QuantizeError, Result};
 use crate::onnx_proto::{
-    ModelProto, StringStringEntryProto,
-    tensor_proto, tensor_shape_proto, type_proto,
+    tensor_proto, tensor_shape_proto, type_proto, ModelProto, StringStringEntryProto,
 };
 use prost::Message;
 use std::fs;
@@ -31,7 +30,12 @@ pub struct OnnxModel {
 
 impl std::fmt::Debug for OnnxModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = self.proto.graph.as_ref().map(|g| g.name.as_str()).unwrap_or("");
+        let name = self
+            .proto
+            .graph
+            .as_ref()
+            .map(|g| g.name.as_str())
+            .unwrap_or("");
         let num_nodes = self.proto.graph.as_ref().map(|g| g.node.len()).unwrap_or(0);
         f.debug_struct("OnnxModel")
             .field("name", &name)
@@ -83,14 +87,14 @@ impl OnnxModel {
     /// is too large (>10 GB), or contains invalid protobuf data.
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
-        let mut file =
-            fs::File::open(path).map_err(|e| QuantizeError::ModelLoad {
-                path: path.to_path_buf(),
-                reason: format!("Failed to open ONNX file: {e}"),
-            })?;
+        let mut file = fs::File::open(path).map_err(|e| QuantizeError::ModelLoad {
+            path: path.to_path_buf(),
+            reason: format!("Failed to open ONNX file: {e}"),
+        })?;
 
         const MAX_MODEL_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10 GB
-        let file_size = file.metadata()
+        let file_size = file
+            .metadata()
             .map_err(|e| QuantizeError::ModelLoad {
                 path: path.to_path_buf(),
                 reason: format!("Failed to read metadata: {e}"),
@@ -113,11 +117,10 @@ impl OnnxModel {
                 reason: format!("Failed to read ONNX file: {e}"),
             })?;
 
-        let proto = ModelProto::decode(&buffer[..])
-            .map_err(|e| QuantizeError::ModelLoad {
-                path: path.to_path_buf(),
-                reason: format!("Failed to parse ONNX protobuf: {e}"),
-            })?;
+        let proto = ModelProto::decode(&buffer[..]).map_err(|e| QuantizeError::ModelLoad {
+            path: path.to_path_buf(),
+            reason: format!("Failed to parse ONNX protobuf: {e}"),
+        })?;
 
         Ok(Self { proto })
     }
@@ -159,12 +162,14 @@ impl OnnxModel {
             if let Some(type_proto) = &inp.r#type {
                 if let Some(type_proto::Value::TensorType(tensor_type)) = &type_proto.value {
                     if let Some(shape) = &tensor_type.shape {
-                        let dims: Vec<i64> = shape.dim.iter().map(|d| {
-                            match &d.value {
+                        let dims: Vec<i64> = shape
+                            .dim
+                            .iter()
+                            .map(|d| match &d.value {
                                 Some(tensor_shape_proto::dimension::Value::DimValue(v)) => *v,
                                 _ => -1,
-                            }
-                        }).collect();
+                            })
+                            .collect();
                         shapes.push(dims);
                     }
                 }
@@ -189,12 +194,20 @@ impl OnnxModel {
 
             let name = initializer.name.clone();
 
-            let shape: Vec<usize> = initializer.dims.iter()
+            let shape: Vec<usize> = initializer
+                .dims
+                .iter()
                 .map(|&d| d.max(0) as usize)
                 .collect();
 
             let data = if !initializer.raw_data.is_empty() {
-                initializer.raw_data.chunks_exact(4)
+                if initializer.raw_data.len() % 4 != 0 {
+                    // Misaligned raw_data — skip this initializer rather than panic
+                    continue;
+                }
+                initializer
+                    .raw_data
+                    .chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
                     .collect()
             } else {
@@ -218,7 +231,9 @@ impl OnnxModel {
             Some(g) => g,
             None => return 0,
         };
-        graph.initializer.iter()
+        graph
+            .initializer
+            .iter()
             .map(|init| {
                 if !init.raw_data.is_empty() {
                     init.raw_data.len()
@@ -265,43 +280,48 @@ impl OnnxModel {
         let path = path.as_ref();
         use graph_builder::{apply_qdq_transform, ensure_opset_version};
 
-        // --- 1. Opset ≥ 13 (DequantizeLinear per-channel needs it) ---
-        ensure_opset_version(&mut self.proto, 13);
+        // --- 1. Opset: ≥10 for per-tensor DequantizeLinear, ≥13 for per-channel ---
+        let needs_per_channel = quantized_data.iter().any(|w| w.axis.is_some());
+        let min_opset = if needs_per_channel { 13 } else { 10 };
+        ensure_opset_version(&mut self.proto, min_opset);
 
         // --- 2. Persist per-weight bits in model metadata ---
         for inp in quantized_data.iter() {
             self.proto.metadata_props.push(StringStringEntryProto {
-                key:   format!("quantize_rs.bits.{}", inp.original_name),
+                key: format!("quantize_rs.bits.{}", inp.original_name),
                 value: inp.bits.to_string(),
             });
         }
 
         // --- 3. Apply QDQ transform to the graph ---
-        let graph = self.proto.graph.as_mut().ok_or_else(|| QuantizeError::ModelSave {
-            path: path.to_path_buf(),
-            reason: "Model has no graph".to_string(),
-        })?;
+        let graph = self
+            .proto
+            .graph
+            .as_mut()
+            .ok_or_else(|| QuantizeError::ModelSave {
+                path: path.to_path_buf(),
+                reason: "Model has no graph".to_string(),
+            })?;
         apply_qdq_transform(graph, quantized_data)?;
 
         // --- 4. Encode and write to disk ---
         let mut buf = Vec::new();
-        self.proto.encode(&mut buf)
+        self.proto
+            .encode(&mut buf)
             .map_err(|e| QuantizeError::ModelSave {
                 path: path.to_path_buf(),
                 reason: format!("Failed to encode ONNX model: {e}"),
             })?;
 
-        let mut file = std::fs::File::create(path)
-            .map_err(|e| QuantizeError::ModelSave {
-                path: path.to_path_buf(),
-                reason: format!("Failed to create output file: {e}"),
-            })?;
+        let mut file = std::fs::File::create(path).map_err(|e| QuantizeError::ModelSave {
+            path: path.to_path_buf(),
+            reason: format!("Failed to create output file: {e}"),
+        })?;
 
-        file.write_all(&buf)
-            .map_err(|e| QuantizeError::ModelSave {
-                path: path.to_path_buf(),
-                reason: format!("Failed to write ONNX model: {e}"),
-            })?;
+        file.write_all(&buf).map_err(|e| QuantizeError::ModelSave {
+            path: path.to_path_buf(),
+            reason: format!("Failed to write ONNX model: {e}"),
+        })?;
 
         Ok(())
     }
@@ -355,8 +375,7 @@ impl OnnxModel {
 
         let mut scale_map: std::collections::HashMap<String, f32> =
             std::collections::HashMap::new();
-        let mut zp_map: std::collections::HashMap<String, i8> =
-            std::collections::HashMap::new();
+        let mut zp_map: std::collections::HashMap<String, i8> = std::collections::HashMap::new();
         let mut quant_bases: Vec<String> = Vec::new();
 
         for init in &graph.initializer {
@@ -369,8 +388,10 @@ impl OnnxModel {
                 } else if init.raw_data.len() >= 4 {
                     // Fallback: try raw_data as little-endian f32
                     f32::from_le_bytes([
-                        init.raw_data[0], init.raw_data[1],
-                        init.raw_data[2], init.raw_data[3],
+                        init.raw_data[0],
+                        init.raw_data[1],
+                        init.raw_data[2],
+                        init.raw_data[3],
                     ])
                 } else {
                     1.0
@@ -390,8 +411,7 @@ impl OnnxModel {
         }
 
         // Read bits from metadata_props (written by save_quantized)
-        let mut bits_map: std::collections::HashMap<String, u8> =
-            std::collections::HashMap::new();
+        let mut bits_map: std::collections::HashMap<String, u8> = std::collections::HashMap::new();
         for prop in &self.proto.metadata_props {
             if let Some(base) = prop.key.strip_prefix("quantize_rs.bits.") {
                 if let Ok(bits) = prop.value.parse::<u8>() {
@@ -409,7 +429,9 @@ impl OnnxModel {
                 let bits = bits_map.get(base).copied().unwrap_or(8);
 
                 // Element count = product of dims on the _quantized tensor
-                let original_length = graph.initializer.iter()
+                let original_length = graph
+                    .initializer
+                    .iter()
                     .find(|i| i.name == format!("{}_quantized", base))
                     .map(|i| i.dims.iter().product::<i64>() as usize)
                     .unwrap_or(0);

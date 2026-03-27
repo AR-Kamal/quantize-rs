@@ -4,15 +4,15 @@
 //! the repo) and exercise the full quantization pipeline.
 
 use prost::Message;
-use quantize_rs::*;
+use quantize_rs::calibration::methods::CalibrationMethod;
+use quantize_rs::calibration::stats::ActivationStats;
 use quantize_rs::onnx_proto::{
-    GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorProto,
-    ValueInfoProto, tensor_proto,
+    tensor_proto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorProto,
+    ValueInfoProto,
 };
 use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
-use quantize_rs::quantization::{
-    QuantConfig, QuantizedTensor, QuantizedTensorInt4, Quantizer,
-};
+use quantize_rs::quantization::{QuantConfig, QuantizedTensor, QuantizedTensorInt4, Quantizer};
+use quantize_rs::*;
 use std::collections::HashMap;
 
 // ===========================================================================
@@ -22,23 +22,32 @@ use std::collections::HashMap;
 /// Build a minimal ONNX ModelProto with one Conv node and one weight tensor.
 fn build_minimal_model(weight_data: &[f32], weight_shape: &[i64]) -> ModelProto {
     ModelProto {
-        opset_import: vec![OperatorSetIdProto { domain: String::new(), version: 13 }],
+        opset_import: vec![OperatorSetIdProto {
+            domain: String::new(),
+            version: 13,
+        }],
         graph: Some(GraphProto {
             name: "test_graph".to_string(),
-            input:  vec![ValueInfoProto { name: "input".to_string(),  ..Default::default() }],
-            output: vec![ValueInfoProto { name: "output".to_string(), ..Default::default() }],
+            input: vec![ValueInfoProto {
+                name: "input".to_string(),
+                ..Default::default()
+            }],
+            output: vec![ValueInfoProto {
+                name: "output".to_string(),
+                ..Default::default()
+            }],
             initializer: vec![TensorProto {
-                name:       "weight".to_string(),
-                data_type:  tensor_proto::DataType::Float as i32,
-                dims:       weight_shape.to_vec(),
+                name: "weight".to_string(),
+                data_type: tensor_proto::DataType::Float as i32,
+                dims: weight_shape.to_vec(),
                 float_data: weight_data.to_vec(),
                 ..Default::default()
             }],
             node: vec![NodeProto {
                 op_type: "Conv".to_string(),
-                name:    "conv0".to_string(),
-                input:   vec!["input".to_string(), "weight".to_string()],
-                output:  vec!["output".to_string()],
+                name: "conv0".to_string(),
+                input: vec!["input".to_string(), "weight".to_string()],
+                output: vec!["output".to_string()],
                 ..Default::default()
             }],
             ..Default::default()
@@ -49,27 +58,38 @@ fn build_minimal_model(weight_data: &[f32], weight_shape: &[i64]) -> ModelProto 
 
 /// Build a two-weight ONNX ModelProto with two Conv nodes chained.
 fn build_two_weight_model(
-    w1_data: &[f32], w1_shape: &[i64],
-    w2_data: &[f32], w2_shape: &[i64],
+    w1_data: &[f32],
+    w1_shape: &[i64],
+    w2_data: &[f32],
+    w2_shape: &[i64],
 ) -> ModelProto {
     ModelProto {
-        opset_import: vec![OperatorSetIdProto { domain: String::new(), version: 13 }],
+        opset_import: vec![OperatorSetIdProto {
+            domain: String::new(),
+            version: 13,
+        }],
         graph: Some(GraphProto {
             name: "test_two_weight".to_string(),
-            input:  vec![ValueInfoProto { name: "input".to_string(),  ..Default::default() }],
-            output: vec![ValueInfoProto { name: "output".to_string(), ..Default::default() }],
+            input: vec![ValueInfoProto {
+                name: "input".to_string(),
+                ..Default::default()
+            }],
+            output: vec![ValueInfoProto {
+                name: "output".to_string(),
+                ..Default::default()
+            }],
             initializer: vec![
                 TensorProto {
-                    name:       "w1".to_string(),
-                    data_type:  tensor_proto::DataType::Float as i32,
-                    dims:       w1_shape.to_vec(),
+                    name: "w1".to_string(),
+                    data_type: tensor_proto::DataType::Float as i32,
+                    dims: w1_shape.to_vec(),
                     float_data: w1_data.to_vec(),
                     ..Default::default()
                 },
                 TensorProto {
-                    name:       "w2".to_string(),
-                    data_type:  tensor_proto::DataType::Float as i32,
-                    dims:       w2_shape.to_vec(),
+                    name: "w2".to_string(),
+                    data_type: tensor_proto::DataType::Float as i32,
+                    dims: w2_shape.to_vec(),
                     float_data: w2_data.to_vec(),
                     ..Default::default()
                 },
@@ -77,16 +97,16 @@ fn build_two_weight_model(
             node: vec![
                 NodeProto {
                     op_type: "Conv".to_string(),
-                    name:    "conv1".to_string(),
-                    input:   vec!["input".to_string(), "w1".to_string()],
-                    output:  vec!["mid".to_string()],
+                    name: "conv1".to_string(),
+                    input: vec!["input".to_string(), "w1".to_string()],
+                    output: vec!["mid".to_string()],
                     ..Default::default()
                 },
                 NodeProto {
                     op_type: "Conv".to_string(),
-                    name:    "conv2".to_string(),
-                    input:   vec!["mid".to_string(), "w2".to_string()],
-                    output:  vec!["output".to_string()],
+                    name: "conv2".to_string(),
+                    input: vec!["mid".to_string(), "w2".to_string()],
+                    output: vec!["output".to_string()],
                     ..Default::default()
                 },
             ],
@@ -129,8 +149,15 @@ fn test_quantize_simple_model_int8() {
     assert_eq!(weights[0].name, "weight");
 
     // Quantize INT8
-    let quantizer = Quantizer::new(QuantConfig { bits: 8, per_channel: false, calibration_method: None, ..Default::default() });
-    let quantized = quantizer.quantize_tensor(&weights[0].data, weights[0].shape.clone()).unwrap();
+    let quantizer = Quantizer::new(QuantConfig {
+        bits: 8,
+        per_channel: false,
+        calibration_method: None,
+        ..Default::default()
+    });
+    let quantized = quantizer
+        .quantize_tensor(&weights[0].data, weights[0].shape.clone())
+        .unwrap();
     assert!(quantized.is_int8());
 
     let (scales, zero_points) = quantized.get_all_scales_zero_points();
@@ -152,7 +179,11 @@ fn test_quantize_simple_model_int8() {
     // Reload and validate
     let reloaded = OnnxModel::load(&output_path).unwrap();
     let report = reloaded.validate_connectivity();
-    assert!(report.valid, "Connectivity broken: {:?}", report.broken_refs);
+    assert!(
+        report.valid,
+        "Connectivity broken: {:?}",
+        report.broken_refs
+    );
 
     // Check QDQ info
     let qinfo = reloaded.load_quantized_info();
@@ -174,8 +205,15 @@ fn test_quantize_simple_model_int4() {
     let weights = model.extract_weights();
 
     // Quantize INT4
-    let quantizer = Quantizer::new(QuantConfig { bits: 4, per_channel: false, calibration_method: None, ..Default::default() });
-    let quantized = quantizer.quantize_tensor(&weights[0].data, weights[0].shape.clone()).unwrap();
+    let quantizer = Quantizer::new(QuantConfig {
+        bits: 4,
+        per_channel: false,
+        calibration_method: None,
+        ..Default::default()
+    });
+    let quantized = quantizer
+        .quantize_tensor(&weights[0].data, weights[0].shape.clone())
+        .unwrap();
     assert!(quantized.is_int4());
     assert_eq!(quantized.bits(), 4);
 
@@ -194,7 +232,11 @@ fn test_quantize_simple_model_int4() {
 
     let reloaded = OnnxModel::load(&output_path).unwrap();
     let report = reloaded.validate_connectivity();
-    assert!(report.valid, "Connectivity broken: {:?}", report.broken_refs);
+    assert!(
+        report.valid,
+        "Connectivity broken: {:?}",
+        report.broken_refs
+    );
 
     let qinfo = reloaded.load_quantized_info();
     assert_eq!(qinfo.len(), 1);
@@ -205,17 +247,22 @@ fn test_quantize_simple_model_int4() {
 fn test_quantize_per_channel() {
     // Two channels with very different ranges
     let mut w1_data = Vec::new();
-    for i in 0..8 { w1_data.push(i as f32 * 0.01); }  // channel 0: small
-    for i in 0..8 { w1_data.push(i as f32 * 1.0); }    // channel 1: large
+    for i in 0..8 {
+        w1_data.push(i as f32 * 0.01);
+    } // channel 0: small
+    for i in 0..8 {
+        w1_data.push(i as f32 * 1.0);
+    } // channel 1: large
 
     let mut w2_data = Vec::new();
-    for i in 0..8 { w2_data.push(i as f32 * 0.5); }
-    for i in 0..8 { w2_data.push(i as f32 * 2.0); }
+    for i in 0..8 {
+        w2_data.push(i as f32 * 0.5);
+    }
+    for i in 0..8 {
+        w2_data.push(i as f32 * 2.0);
+    }
 
-    let model_proto = build_two_weight_model(
-        &w1_data, &[2, 8],
-        &w2_data, &[2, 8],
-    );
+    let model_proto = build_two_weight_model(&w1_data, &[2, 8], &w2_data, &[2, 8]);
 
     let dir = tempfile::tempdir().unwrap();
     let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
@@ -225,7 +272,12 @@ fn test_quantize_per_channel() {
     assert_eq!(weights.len(), 2);
 
     // Per-channel INT8
-    let quantizer = Quantizer::new(QuantConfig { bits: 8, per_channel: true, calibration_method: None, ..Default::default() });
+    let quantizer = Quantizer::new(QuantConfig {
+        bits: 8,
+        per_channel: true,
+        calibration_method: None,
+        ..Default::default()
+    });
 
     let mut qdq_data = Vec::new();
     for w in &weights {
@@ -252,7 +304,11 @@ fn test_quantize_per_channel() {
 
     let reloaded = OnnxModel::load(&output_path).unwrap();
     let report = reloaded.validate_connectivity();
-    assert!(report.valid, "Connectivity broken: {:?}", report.broken_refs);
+    assert!(
+        report.valid,
+        "Connectivity broken: {:?}",
+        report.broken_refs
+    );
 }
 
 #[test]
@@ -291,20 +347,37 @@ fn test_error_variants_are_correct() {
 
     // Shape mismatch → InvalidTensor
     let result = QuantizedTensor::from_f32(&[1.0, 2.0], vec![3]);
-    assert!(matches!(result.unwrap_err(), QuantizeError::InvalidTensor { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        QuantizeError::InvalidTensor { .. }
+    ));
 
     // Per-channel on scalar → InvalidTensor
     let result = QuantizedTensor::from_f32_per_channel(&[1.0], vec![]);
-    assert!(matches!(result.unwrap_err(), QuantizeError::InvalidTensor { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        QuantizeError::InvalidTensor { .. }
+    ));
 
     // Unsupported bits → UnsupportedConfig
-    let quantizer = Quantizer::new(QuantConfig { bits: 3, per_channel: false, calibration_method: None, ..Default::default() });
+    let quantizer = Quantizer::new(QuantConfig {
+        bits: 3,
+        per_channel: false,
+        calibration_method: None,
+        ..Default::default()
+    });
     let result = quantizer.quantize_tensor(&[1.0, 2.0], vec![2]);
-    assert!(matches!(result.unwrap_err(), QuantizeError::UnsupportedConfig { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        QuantizeError::UnsupportedConfig { .. }
+    ));
 
     // Model load non-existent → ModelLoad
     let result = OnnxModel::load("/nonexistent/path/model.onnx");
-    assert!(matches!(result.unwrap_err(), QuantizeError::ModelLoad { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        QuantizeError::ModelLoad { .. }
+    ));
 
     // CalibrationMethod parse error → Config
     let result: Result<quantize_rs::calibration::methods::CalibrationMethod, _> = "invalid".parse();
@@ -312,7 +385,10 @@ fn test_error_variants_are_correct() {
 
     // Config validation error → Config
     let cfg = Config::from_yaml("bits: 3").unwrap();
-    assert!(matches!(cfg.validate().unwrap_err(), QuantizeError::Config { .. }));
+    assert!(matches!(
+        cfg.validate().unwrap_err(),
+        QuantizeError::Config { .. }
+    ));
 }
 
 /// Mixed-precision: w1 → INT4, w2 → INT8 in the same model.
@@ -380,7 +456,11 @@ fn test_mixed_precision_quantization() {
     // Reload and validate connectivity
     let reloaded = OnnxModel::load(&output_path).unwrap();
     let report = reloaded.validate_connectivity();
-    assert!(report.valid, "Connectivity broken: {:?}", report.broken_refs);
+    assert!(
+        report.valid,
+        "Connectivity broken: {:?}",
+        report.broken_refs
+    );
 
     // Per-weight bit-width must survive the round-trip through metadata
     let qinfo = reloaded.load_quantized_info();
@@ -440,7 +520,10 @@ models:
       conv1.weight: 3
 "#;
     let cfg = Config::from_yaml(yaml_bad).unwrap();
-    assert!(matches!(cfg.validate().unwrap_err(), QuantizeError::Config { .. }));
+    assert!(matches!(
+        cfg.validate().unwrap_err(),
+        QuantizeError::Config { .. }
+    ));
 }
 
 // ===========================================================================
@@ -466,39 +549,60 @@ fn build_multilayer_model() -> ModelProto {
         ..Default::default()
     };
     ModelProto {
-        opset_import: vec![OperatorSetIdProto { domain: String::new(), version: 13 }],
+        opset_import: vec![OperatorSetIdProto {
+            domain: String::new(),
+            version: 13,
+        }],
         graph: Some(GraphProto {
             name: "multilayer".to_string(),
-            input:  vec![ValueInfoProto { name: "input".to_string(), ..Default::default() }],
-            output: vec![ValueInfoProto { name: "output".to_string(), ..Default::default() }],
+            input: vec![ValueInfoProto {
+                name: "input".to_string(),
+                ..Default::default()
+            }],
+            output: vec![ValueInfoProto {
+                name: "output".to_string(),
+                ..Default::default()
+            }],
             initializer: vec![
                 make_tensor("conv1.weight", &[8, 3, 3, 3], 216),
-                make_tensor("conv1.bias",   &[8],           8),
+                make_tensor("conv1.bias", &[8], 8),
                 make_tensor("conv2.weight", &[16, 8, 3, 3], 1152),
-                make_tensor("conv2.bias",   &[16],          16),
-                make_tensor("fc.weight",    &[10, 144],     1440),
-                make_tensor("fc.bias",      &[10],          10),
+                make_tensor("conv2.bias", &[16], 16),
+                make_tensor("fc.weight", &[10, 144], 1440),
+                make_tensor("fc.bias", &[10], 10),
             ],
             node: vec![
                 NodeProto {
                     op_type: "Conv".to_string(),
-                    name:    "conv1".to_string(),
-                    input:   vec!["input".to_string(), "conv1.weight".to_string(), "conv1.bias".to_string()],
-                    output:  vec!["conv1_out".to_string()],
+                    name: "conv1".to_string(),
+                    input: vec![
+                        "input".to_string(),
+                        "conv1.weight".to_string(),
+                        "conv1.bias".to_string(),
+                    ],
+                    output: vec!["conv1_out".to_string()],
                     ..Default::default()
                 },
                 NodeProto {
                     op_type: "Conv".to_string(),
-                    name:    "conv2".to_string(),
-                    input:   vec!["conv1_out".to_string(), "conv2.weight".to_string(), "conv2.bias".to_string()],
-                    output:  vec!["conv2_out".to_string()],
+                    name: "conv2".to_string(),
+                    input: vec![
+                        "conv1_out".to_string(),
+                        "conv2.weight".to_string(),
+                        "conv2.bias".to_string(),
+                    ],
+                    output: vec!["conv2_out".to_string()],
                     ..Default::default()
                 },
                 NodeProto {
                     op_type: "Gemm".to_string(),
-                    name:    "fc".to_string(),
-                    input:   vec!["conv2_out".to_string(), "fc.weight".to_string(), "fc.bias".to_string()],
-                    output:  vec!["output".to_string()],
+                    name: "fc".to_string(),
+                    input: vec![
+                        "conv2_out".to_string(),
+                        "fc.weight".to_string(),
+                        "fc.bias".to_string(),
+                    ],
+                    output: vec!["output".to_string()],
                     ..Default::default()
                 },
             ],
@@ -555,7 +659,11 @@ fn test_multilayer_min_elements() {
     assert_eq!(weights.len(), 6);
 
     // Only tensors with ≥ 100 elements pass; biases (8, 16, 10) are skipped.
-    let config = QuantConfig { bits: 8, min_elements: 100, ..Default::default() };
+    let config = QuantConfig {
+        bits: 8,
+        min_elements: 100,
+        ..Default::default()
+    };
     let qdq_data = quantize_weights(&config, &weights);
 
     assert_eq!(qdq_data.len(), 3, "expected 3 large weights quantized");
@@ -595,8 +703,11 @@ fn test_multilayer_excluded_layers() {
     // 6 total − 2 excluded = 4 quantized
     assert_eq!(qdq_data.len(), 4, "expected 4 weights after exclusions");
     let names: Vec<&str> = qdq_data.iter().map(|q| q.original_name.as_str()).collect();
-    assert!(!names.contains(&"conv1.weight"), "conv1.weight should be excluded");
-    assert!(!names.contains(&"fc.bias"),      "fc.bias should be excluded");
+    assert!(
+        !names.contains(&"conv1.weight"),
+        "conv1.weight should be excluded"
+    );
+    assert!(!names.contains(&"fc.bias"), "fc.bias should be excluded");
 
     let output_path = dir.path().join("model_excluded.onnx");
     model.save_quantized(&qdq_data, &output_path).unwrap();
@@ -617,7 +728,11 @@ fn test_multilayer_full_round_trip() {
     let weights = model.extract_weights();
     assert_eq!(weights.len(), 6);
 
-    let config = QuantConfig { bits: 8, per_channel: true, ..Default::default() };
+    let config = QuantConfig {
+        bits: 8,
+        per_channel: true,
+        ..Default::default()
+    };
     let qdq_data = quantize_weights(&config, &weights);
     assert_eq!(qdq_data.len(), 6, "all 6 weights should be quantized");
 
@@ -626,7 +741,11 @@ fn test_multilayer_full_round_trip() {
 
     let reloaded = OnnxModel::load(&output_path).unwrap();
     let report = reloaded.validate_connectivity();
-    assert!(report.valid, "Connectivity broken: {:?}", report.broken_refs);
+    assert!(
+        report.valid,
+        "Connectivity broken: {:?}",
+        report.broken_refs
+    );
 
     let qinfo = reloaded.load_quantized_info();
     assert_eq!(qinfo.len(), 6, "all 6 weights should appear in metadata");
@@ -650,22 +769,42 @@ fn test_multilayer_compression_ratio() {
 
     let original_bytes: usize = weights.iter().map(|w| w.data.len() * 4).sum();
 
-    let cfg8 = QuantConfig { bits: 8, ..Default::default() };
+    let cfg8 = QuantConfig {
+        bits: 8,
+        ..Default::default()
+    };
     let bytes_int8: usize = weights
         .iter()
-        .map(|w| Quantizer::new(cfg8.clone()).quantize_tensor(&w.data, w.shape.clone()).unwrap().size_bytes())
+        .map(|w| {
+            Quantizer::new(cfg8.clone())
+                .quantize_tensor(&w.data, w.shape.clone())
+                .unwrap()
+                .size_bytes()
+        })
         .sum();
 
-    let cfg4 = QuantConfig { bits: 4, ..Default::default() };
+    let cfg4 = QuantConfig {
+        bits: 4,
+        ..Default::default()
+    };
     let bytes_int4: usize = weights
         .iter()
-        .map(|w| Quantizer::new(cfg4.clone()).quantize_tensor(&w.data, w.shape.clone()).unwrap().size_bytes())
+        .map(|w| {
+            Quantizer::new(cfg4.clone())
+                .quantize_tensor(&w.data, w.shape.clone())
+                .unwrap()
+                .size_bytes()
+        })
         .sum();
 
-    assert!(bytes_int8 < original_bytes,
-        "INT8 ({bytes_int8} B) should be smaller than FP32 ({original_bytes} B)");
-    assert!(bytes_int4 < bytes_int8,
-        "INT4 ({bytes_int4} B) should be smaller than INT8 ({bytes_int8} B)");
+    assert!(
+        bytes_int8 < original_bytes,
+        "INT8 ({bytes_int8} B) should be smaller than FP32 ({original_bytes} B)"
+    );
+    assert!(
+        bytes_int4 < bytes_int8,
+        "INT4 ({bytes_int4} B) should be smaller than INT8 ({bytes_int8} B)"
+    );
 
     // INT8 is ~25% of FP32, INT4 is ~12.5%
     let ratio8 = bytes_int8 as f64 / original_bytes as f64;
@@ -682,26 +821,38 @@ fn test_dual_input_initializer_model() {
     let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
     // Weight appears as BOTH a graph input and an initializer
     let model_proto = ModelProto {
-        opset_import: vec![OperatorSetIdProto { domain: String::new(), version: 13 }],
+        opset_import: vec![OperatorSetIdProto {
+            domain: String::new(),
+            version: 13,
+        }],
         graph: Some(GraphProto {
             name: "dual_input".to_string(),
             input: vec![
-                ValueInfoProto { name: "input".to_string(),  ..Default::default() },
-                ValueInfoProto { name: "weight".to_string(), ..Default::default() },
+                ValueInfoProto {
+                    name: "input".to_string(),
+                    ..Default::default()
+                },
+                ValueInfoProto {
+                    name: "weight".to_string(),
+                    ..Default::default()
+                },
             ],
-            output: vec![ValueInfoProto { name: "output".to_string(), ..Default::default() }],
+            output: vec![ValueInfoProto {
+                name: "output".to_string(),
+                ..Default::default()
+            }],
             initializer: vec![TensorProto {
-                name:       "weight".to_string(),
-                data_type:  tensor_proto::DataType::Float as i32,
-                dims:       vec![4, 4],
+                name: "weight".to_string(),
+                data_type: tensor_proto::DataType::Float as i32,
+                dims: vec![4, 4],
                 float_data: weight_data.clone(),
                 ..Default::default()
             }],
             node: vec![NodeProto {
                 op_type: "Conv".to_string(),
-                name:    "conv0".to_string(),
-                input:   vec!["input".to_string(), "weight".to_string()],
-                output:  vec!["output".to_string()],
+                name: "conv0".to_string(),
+                input: vec!["input".to_string(), "weight".to_string()],
+                output: vec!["output".to_string()],
                 ..Default::default()
             }],
             ..Default::default()
@@ -714,13 +865,22 @@ fn test_dual_input_initializer_model() {
 
     let mut model = OnnxModel::load(&model_path).unwrap();
     let info = model.info();
-    assert_eq!(info.inputs.len(), 2, "model should have 2 inputs (data + weight)");
+    assert_eq!(
+        info.inputs.len(),
+        2,
+        "model should have 2 inputs (data + weight)"
+    );
 
     let weights = model.extract_weights();
     assert_eq!(weights.len(), 1);
 
-    let quantizer = Quantizer::new(QuantConfig { bits: 8, ..Default::default() });
-    let quantized = quantizer.quantize_tensor(&weights[0].data, weights[0].shape.clone()).unwrap();
+    let quantizer = Quantizer::new(QuantConfig {
+        bits: 8,
+        ..Default::default()
+    });
+    let quantized = quantizer
+        .quantize_tensor(&weights[0].data, weights[0].shape.clone())
+        .unwrap();
     let (scales, zero_points) = quantized.get_all_scales_zero_points();
 
     let qdq_data = vec![QdqWeightInput {
@@ -737,12 +897,20 @@ fn test_dual_input_initializer_model() {
 
     let reloaded = OnnxModel::load(&output_path).unwrap();
     let report = reloaded.validate_connectivity();
-    assert!(report.valid, "Connectivity broken: {:?}", report.broken_refs);
+    assert!(
+        report.valid,
+        "Connectivity broken: {:?}",
+        report.broken_refs
+    );
 
     // The weight-as-input entry should have been removed by QDQ transform
     let reloaded_info = reloaded.info();
-    assert_eq!(reloaded_info.inputs.len(), 1,
-        "QDQ transform should remove weight from graph.input; got {:?}", reloaded_info.inputs);
+    assert_eq!(
+        reloaded_info.inputs.len(),
+        1,
+        "QDQ transform should remove weight from graph.input; got {:?}",
+        reloaded_info.inputs
+    );
     assert_eq!(reloaded_info.inputs[0], "input");
 }
 
@@ -764,20 +932,38 @@ fn test_real_model_int8() {
     let weights = model.extract_weights();
     assert!(!weights.is_empty(), "model has no extractable weights");
 
-    let config = QuantConfig { bits: 8, per_channel: false, min_elements: 128, ..Default::default() };
+    let config = QuantConfig {
+        bits: 8,
+        per_channel: false,
+        min_elements: 128,
+        ..Default::default()
+    };
     let qdq_data = quantize_weights(&config, &weights);
-    assert!(!qdq_data.is_empty(), "no weights passed the min_elements=128 filter");
+    assert!(
+        !qdq_data.is_empty(),
+        "no weights passed the min_elements=128 filter"
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let output_path = dir.path().join("model_int8.onnx");
-    model.save_quantized(&qdq_data, &output_path).expect("save failed");
+    model
+        .save_quantized(&qdq_data, &output_path)
+        .expect("save failed");
 
     let reloaded = OnnxModel::load(&output_path).unwrap();
     let report = reloaded.validate_connectivity();
-    assert!(report.valid, "Connectivity broken after INT8 quantization: {:?}", report.broken_refs);
+    assert!(
+        report.valid,
+        "Connectivity broken after INT8 quantization: {:?}",
+        report.broken_refs
+    );
 
     let qinfo = reloaded.load_quantized_info();
-    assert_eq!(qinfo.len(), qdq_data.len(), "metadata weight count mismatch");
+    assert_eq!(
+        qinfo.len(),
+        qdq_data.len(),
+        "metadata weight count mismatch"
+    );
     for info in &qinfo {
         assert_eq!(info.bits, 8);
         assert!(info.scale > 0.0);
@@ -794,16 +980,27 @@ fn test_real_model_int4() {
     let mut model = OnnxModel::load(&path).expect("failed to load model");
     let weights = model.extract_weights();
 
-    let config = QuantConfig { bits: 4, per_channel: false, min_elements: 128, ..Default::default() };
+    let config = QuantConfig {
+        bits: 4,
+        per_channel: false,
+        min_elements: 128,
+        ..Default::default()
+    };
     let qdq_data = quantize_weights(&config, &weights);
 
     let dir = tempfile::tempdir().unwrap();
     let output_path = dir.path().join("model_int4.onnx");
-    model.save_quantized(&qdq_data, &output_path).expect("save failed");
+    model
+        .save_quantized(&qdq_data, &output_path)
+        .expect("save failed");
 
     let reloaded = OnnxModel::load(&output_path).unwrap();
     let report = reloaded.validate_connectivity();
-    assert!(report.valid, "Connectivity broken after INT4 quantization: {:?}", report.broken_refs);
+    assert!(
+        report.valid,
+        "Connectivity broken after INT4 quantization: {:?}",
+        report.broken_refs
+    );
 
     let qinfo = reloaded.load_quantized_info();
     assert_eq!(qinfo.len(), qdq_data.len());
@@ -851,7 +1048,10 @@ output = "b.onnx"
 
     // Invalid bits → Config error
     let cfg = Config::from_yaml("bits: 16").unwrap();
-    assert!(matches!(cfg.validate().unwrap_err(), QuantizeError::Config { .. }));
+    assert!(matches!(
+        cfg.validate().unwrap_err(),
+        QuantizeError::Config { .. }
+    ));
 
     // Empty model input → Config error
     let yaml_bad = r#"
@@ -861,5 +1061,229 @@ models:
     output: "out.onnx"
 "#;
     let cfg = Config::from_yaml(yaml_bad).unwrap();
-    assert!(matches!(cfg.validate().unwrap_err(), QuantizeError::Config { .. }));
+    assert!(matches!(
+        cfg.validate().unwrap_err(),
+        QuantizeError::Config { .. }
+    ));
+}
+
+// ===========================================================================
+// Calibration-aware quantization (quantize_tensor_with_name)
+// ===========================================================================
+
+/// Verify that Quantizer::with_calibration uses activation stats to determine
+/// quantization ranges, producing different scales than weight-only quantization.
+#[test]
+fn test_calibrated_quantization_uses_stats() {
+    // Weight data spans [-1, 1] but the activation stats say the real range is [-0.5, 0.5].
+    // Calibrated quantization should produce a tighter scale (smaller) than weight-only.
+    let weight_data: Vec<f32> = (0..64).map(|i| (i as f32 - 32.0) / 32.0).collect();
+    let shape = vec![4, 16];
+
+    // Weight-only quantization (uses data min/max = [-1, 1])
+    let config_uncalibrated = QuantConfig {
+        bits: 8,
+        ..Default::default()
+    };
+    let q_uncalibrated = Quantizer::new(config_uncalibrated);
+    let result_uncalibrated = q_uncalibrated
+        .quantize_tensor_with_name("layer0.weight", &weight_data, shape.clone())
+        .unwrap();
+
+    // Build activation stats with a narrower range [-0.5, 0.5]
+    let activation_data: Vec<f32> = (0..1000).map(|i| (i as f32 - 500.0) / 1000.0).collect();
+    let stats = ActivationStats::from_data(&activation_data);
+
+    let mut stats_map = HashMap::new();
+    stats_map.insert("layer0.weight".to_string(), stats);
+
+    // Calibrated quantization (uses stats range [-0.5, 0.5])
+    let config_calibrated = QuantConfig {
+        bits: 8,
+        ..Default::default()
+    };
+    let q_calibrated = Quantizer::with_calibration(config_calibrated, stats_map);
+    let result_calibrated = q_calibrated
+        .quantize_tensor_with_name("layer0.weight", &weight_data, shape.clone())
+        .unwrap();
+
+    // The calibrated version should use a different (tighter) scale
+    let (scales_uncal, _) = result_uncalibrated.get_all_scales_zero_points();
+    let (scales_cal, _) = result_calibrated.get_all_scales_zero_points();
+
+    assert_eq!(scales_uncal.len(), 1);
+    assert_eq!(scales_cal.len(), 1);
+    // Calibrated scale should be smaller because the range is narrower
+    assert!(
+        scales_cal[0] < scales_uncal[0],
+        "Calibrated scale ({}) should be < uncalibrated scale ({})",
+        scales_cal[0],
+        scales_uncal[0],
+    );
+}
+
+/// Verify that calibration with an explicit CalibrationMethod (MinMax) works.
+#[test]
+fn test_calibrated_quantization_with_method() {
+    let weight_data: Vec<f32> = (0..100).map(|i| (i as f32 - 50.0) * 0.1).collect();
+    let shape = vec![10, 10];
+
+    // Activation data with some outliers, but most values in [-1, 1]
+    let mut activation_data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 250.0).collect();
+    activation_data.push(10.0); // outlier
+    activation_data.push(-10.0); // outlier
+    let stats = ActivationStats::from_data(&activation_data);
+
+    let mut stats_map = HashMap::new();
+    stats_map.insert("conv.weight".to_string(), stats);
+
+    // With MinMax method — should use full observed range including outliers
+    let config = QuantConfig {
+        bits: 8,
+        calibration_method: Some(CalibrationMethod::MinMax),
+        ..Default::default()
+    };
+    let quantizer = Quantizer::with_calibration(config, stats_map);
+    let result = quantizer
+        .quantize_tensor_with_name("conv.weight", &weight_data, shape)
+        .unwrap();
+
+    assert!(result.is_int8());
+    let error = result.quantization_error(&weight_data);
+    // Should have finite error — the calibrated range includes outliers ±10 so
+    // error is higher than weight-only, but must be finite and bounded.
+    assert!(error.is_finite());
+    assert!(
+        error < 10.0,
+        "Quantization error unexpectedly high: {}",
+        error
+    );
+}
+
+/// Verify fallback when no stats exist for a specific layer.
+#[test]
+fn test_calibrated_quantization_fallback_no_stats() {
+    let weight_data: Vec<f32> = (0..32).map(|i| (i as f32 - 16.0) * 0.5).collect();
+    let shape = vec![4, 8];
+
+    // Stats map has a different layer name — should fall back to data min/max
+    let stats = ActivationStats::from_data(&[0.0, 1.0]);
+    let mut stats_map = HashMap::new();
+    stats_map.insert("other_layer.weight".to_string(), stats);
+
+    let config = QuantConfig {
+        bits: 8,
+        ..Default::default()
+    };
+    let q_calibrated = Quantizer::with_calibration(config.clone(), stats_map);
+    let result_calibrated = q_calibrated
+        .quantize_tensor_with_name("conv.weight", &weight_data, shape.clone())
+        .unwrap();
+
+    // Without calibration at all — should produce same result as fallback
+    let q_uncalibrated = Quantizer::new(config);
+    let result_uncalibrated = q_uncalibrated
+        .quantize_tensor_with_name("conv.weight", &weight_data, shape)
+        .unwrap();
+
+    let (scales_cal, zps_cal) = result_calibrated.get_all_scales_zero_points();
+    let (scales_uncal, zps_uncal) = result_uncalibrated.get_all_scales_zero_points();
+
+    assert_eq!(
+        scales_cal, scales_uncal,
+        "Fallback should match uncalibrated"
+    );
+    assert_eq!(zps_cal, zps_uncal, "Fallback should match uncalibrated");
+}
+
+/// Verify calibrated INT4 quantization works end-to-end.
+#[test]
+fn test_calibrated_quantization_int4() {
+    let weight_data: Vec<f32> = (0..48).map(|i| (i as f32 - 24.0) / 24.0).collect();
+    let shape = vec![6, 8];
+
+    let activation_data: Vec<f32> = (0..200).map(|i| (i as f32 - 100.0) / 100.0).collect();
+    let stats = ActivationStats::from_data(&activation_data);
+
+    let mut stats_map = HashMap::new();
+    stats_map.insert("fc.weight".to_string(), stats);
+
+    let config = QuantConfig {
+        bits: 4,
+        ..Default::default()
+    };
+    let quantizer = Quantizer::with_calibration(config, stats_map);
+    let result = quantizer
+        .quantize_tensor_with_name("fc.weight", &weight_data, shape)
+        .unwrap();
+
+    assert!(result.is_int4());
+    assert_eq!(result.bits(), 4);
+    let error = result.quantization_error(&weight_data);
+    assert!(error.is_finite());
+}
+
+/// Full pipeline: calibrate + quantize + save + reload + validate.
+#[test]
+fn test_calibrated_full_pipeline() {
+    let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
+    let model = build_minimal_model(&weight_data, &[4, 4]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let input_path = write_model_to_tempfile(&model, &dir, "calib_input.onnx");
+    let output_path = dir.path().join("calib_output.onnx");
+
+    // Load and extract weights
+    let mut loaded = OnnxModel::load(&input_path).unwrap();
+    let weights = loaded.extract_weights();
+    assert_eq!(weights.len(), 1);
+
+    // Build calibration stats for the weight
+    let activation_data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 500.0).collect();
+    let stats = ActivationStats::from_data(&activation_data);
+    let mut stats_map = HashMap::new();
+    stats_map.insert("weight".to_string(), stats);
+
+    let config = QuantConfig {
+        bits: 8,
+        ..Default::default()
+    };
+    let quantizer = Quantizer::with_calibration(config, stats_map);
+
+    let mut quantized_data = Vec::new();
+    for weight in &weights {
+        let quantized = quantizer
+            .quantize_tensor_with_name(&weight.name, &weight.data, weight.shape.clone())
+            .unwrap();
+
+        let (scales, zero_points) = quantized.get_all_scales_zero_points();
+        let is_per_channel = quantized.is_per_channel();
+
+        quantized_data.push(QdqWeightInput {
+            original_name: weight.name.clone(),
+            quantized_values: quantized.data(),
+            scales,
+            zero_points,
+            bits: quantized.bits(),
+            axis: if is_per_channel { Some(0) } else { None },
+        });
+    }
+
+    loaded
+        .save_quantized(&quantized_data, &output_path)
+        .unwrap();
+
+    // Reload and validate
+    let reloaded = OnnxModel::load(&output_path).unwrap();
+    let report = reloaded.validate_connectivity();
+    assert!(
+        report.valid,
+        "Connectivity broken: {:?}",
+        report.broken_refs
+    );
+
+    let qdq_info = reloaded.load_quantized_info();
+    assert_eq!(qdq_info.len(), 1);
+    assert_eq!(qdq_info[0].name, "weight");
+    assert!(qdq_info[0].scale > 0.0);
 }
