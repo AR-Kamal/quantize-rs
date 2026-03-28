@@ -166,9 +166,8 @@ output = session.run(None, {input_name: your_input})
 ## Limitations
 
 - ONNX format only. Export PyTorch/TensorFlow models to ONNX before quantizing.
-- Requires ONNX opset >= 13 (automatically upgraded if needed).
+- Requires ONNX opset >= 10 for per-tensor quantization, >= 13 for per-channel (automatically upgraded if needed).
 - INT4 values are stored as INT8 bytes in the ONNX file (DequantizeLinear requires INT8 input in opsets < 21).
-- All weight tensors are quantized. Per-layer selection is not yet supported.
 
 ## License
 
