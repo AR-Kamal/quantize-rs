@@ -8,6 +8,10 @@ ONNX model quantization across different scenarios.
 Install:
     pip install quantization-rs
 
+Install Additional Package:
+    pip install onnxruntime Pillow
+    Note: other common package may neeed to be installed if you don't have it
+
 Build from source:
     pip install maturin
     maturin develop --release --features python
