@@ -12,9 +12,8 @@ use pyo3::prelude::*;
 #[cfg(feature = "calibration")]
 use crate::calibration::{methods::CalibrationMethod, ActivationEstimator, CalibrationDataset};
 use crate::onnx_utils::graph_builder::QdqWeightInput;
-use crate::onnx_utils::OnnxModel;
+use crate::onnx_utils::{OnnxModel, SaveOptions};
 use crate::quantization::{QuantConfig, Quantizer};
-use rayon::prelude::*;
 
 // ===========================================================================
 // Python-exposed types
@@ -50,14 +49,17 @@ struct ModelInfo {
 ///     excluded_layers: Layer names to skip (exact match on initializer name)
 ///     min_elements: Skip tensors with fewer elements than this (0 = no minimum)
 ///     layer_bits: Per-layer bit-width overrides, e.g. {"conv1.weight": 4}
+///     native_int4: If True, store INT4 weights as native ONNX DataType.Int4
+///         (opset 21) — 2× smaller on disk but requires an ORT build with
+///         opset 21 support.  Has no effect on INT8-only models.  Default False.
 ///
 /// Example:
 ///     >>> import quantize_rs
 ///     >>> quantize_rs.quantize("model.onnx", "model_int8.onnx", bits=8)
-///     >>> quantize_rs.quantize("model.onnx", "out.onnx", bits=8,
-///     ...     excluded_layers=["head.weight"], min_elements=128)
+///     >>> quantize_rs.quantize("model.onnx", "out.onnx", bits=4, native_int4=True)
 #[pyfunction]
-#[pyo3(signature = (input_path, output_path, bits=8, per_channel=false, excluded_layers=None, min_elements=0, layer_bits=None))]
+#[pyo3(signature = (input_path, output_path, bits=8, per_channel=false, excluded_layers=None, min_elements=0, layer_bits=None, native_int4=false, symmetric=false))]
+#[allow(clippy::too_many_arguments)]
 fn quantize(
     input_path: &str,
     output_path: &str,
@@ -66,6 +68,8 @@ fn quantize(
     excluded_layers: Option<Vec<String>>,
     min_elements: usize,
     layer_bits: Option<std::collections::HashMap<String, u8>>,
+    native_int4: bool,
+    symmetric: bool,
 ) -> PyResult<()> {
     if bits != 4 && bits != 8 {
         return Err(PyValueError::new_err(format!(
@@ -78,57 +82,30 @@ fn quantize(
     let mut model = OnnxModel::load(input_path)
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to load model: {}", e)))?;
 
-    // Extract weights
-    let weights = model.extract_weights();
-    if weights.is_empty() {
+    if model.extract_weights().is_empty() {
         return Err(PyRuntimeError::new_err("No weights found to quantize"));
     }
 
-    // Quantize
     let config = QuantConfig {
         bits,
         per_channel,
+        symmetric,
         calibration_method: None,
         excluded_layers: excluded_layers.unwrap_or_default(),
         min_elements,
         layer_bits: layer_bits.unwrap_or_default(),
     };
 
-    let to_quantize: Vec<_> = weights
-        .iter()
-        .filter(|w| config.should_quantize(&w.name, w.data.len()))
-        .collect();
+    let outputs = Quantizer::new(config)
+        .quantize_model(&model)
+        .map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
 
-    let quantized_data: Vec<QdqWeightInput> = to_quantize
-        .par_iter()
-        .map(|weight| {
-            let layer_config = QuantConfig {
-                bits: config.bits_for_layer(&weight.name),
-                ..config.clone()
-            };
-            let quantizer = Quantizer::new(layer_config);
-            let quantized = quantizer
-                .quantize_tensor(&weight.data, weight.shape.clone())
-                .map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
-
-            let (scales, zero_points) = quantized.get_all_scales_zero_points();
-            let is_pc = quantized.is_per_channel();
-            let bits_used = quantized.bits();
-
-            Ok(QdqWeightInput {
-                original_name: weight.name.clone(),
-                quantized_values: quantized.data(),
-                scales,
-                zero_points,
-                bits: bits_used,
-                axis: if is_pc { Some(0) } else { None },
-            })
-        })
-        .collect::<PyResult<Vec<_>>>()?;
+    let quantized_data: Vec<QdqWeightInput> = outputs.into_iter().map(|o| o.qdq).collect();
 
     // Save
+    let save_options = SaveOptions::default().with_native_int4(native_int4);
     model
-        .save_quantized(&quantized_data, output_path)
+        .save_quantized_with_options(&quantized_data, output_path, save_options)
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to save model: {}", e)))?;
 
     Ok(())
@@ -164,8 +141,11 @@ fn quantize(
     per_channel=false,
     method="minmax",
     num_samples=100,
-    sample_shape=None
+    sample_shape=None,
+    native_int4=false,
+    symmetric=false,
 ))]
+#[allow(clippy::too_many_arguments)]
 fn quantize_with_calibration(
     input_path: &str,
     output_path: &str,
@@ -175,6 +155,8 @@ fn quantize_with_calibration(
     method: &str,
     num_samples: usize,
     sample_shape: Option<Vec<usize>>,
+    native_int4: bool,
+    symmetric: bool,
 ) -> PyResult<()> {
     if bits != 4 && bits != 8 {
         return Err(PyValueError::new_err(format!(
@@ -244,40 +226,25 @@ fn quantize_with_calibration(
         .collect();
     let mut model = estimator.into_model();
 
-    let weights = model.extract_weights();
-
-    // Quantize with calibration
+    // Quantize with calibration — runs filter + parallel + layer_bits fallback
+    // via the shared library helper (previously this path did none of that).
     let config = QuantConfig {
         bits,
         per_channel,
+        symmetric,
         calibration_method: Some(calib_method),
         ..Default::default()
     };
-    let quantizer = Quantizer::with_calibration(config, activation_stats);
 
-    let mut quantized_data = Vec::new();
-    for weight in &weights {
-        let quantized = quantizer
-            .quantize_tensor_with_name(&weight.name, &weight.data, weight.shape.clone())
-            .map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
-
-        let (scales, zero_points) = quantized.get_all_scales_zero_points();
-        let is_pc = quantized.is_per_channel();
-        let bits_used = quantized.bits();
-
-        quantized_data.push(QdqWeightInput {
-            original_name: weight.name.clone(),
-            quantized_values: quantized.data(),
-            scales,
-            zero_points,
-            bits: bits_used,
-            axis: if is_pc { Some(0) } else { None },
-        });
-    }
+    let outputs = Quantizer::with_calibration(config, activation_stats)
+        .quantize_model(&model)
+        .map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
+    let quantized_data: Vec<QdqWeightInput> = outputs.into_iter().map(|o| o.qdq).collect();
 
     // Save
+    let save_options = SaveOptions::default().with_native_int4(native_int4);
     model
-        .save_quantized(&quantized_data, output_path)
+        .save_quantized_with_options(&quantized_data, output_path, save_options)
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to save model: {}", e)))?;
 
     Ok(())

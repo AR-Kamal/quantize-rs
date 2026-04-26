@@ -38,7 +38,9 @@ pub use config::Config;
 pub use errors::QuantizeError;
 pub use onnx_utils::graph_builder::QdqWeightInput;
 pub use onnx_utils::{ConnectivityReport, ModelInfo, OnnxModel, QuantizedWeightInfo, WeightTensor};
-pub use quantization::{pack_int4, unpack_int4, QuantConfig, QuantParams, Quantizer};
+pub use quantization::{
+    pack_int4, unpack_int4, QuantConfig, QuantParams, QuantizedWeightOutput, Quantizer,
+};
 
 /// Library version string, read from `Cargo.toml` at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

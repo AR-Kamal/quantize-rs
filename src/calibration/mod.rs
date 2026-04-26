@@ -104,6 +104,136 @@ impl CalibrationDataset {
         })
     }
 
+    /// Load calibration samples from a HuggingFace `.safetensors` file that
+    /// contains exactly one tensor.
+    ///
+    /// The tensor must be f32 and at least 2-dimensional `[batch, ...]`.
+    /// Requires the `safetensors-input` feature.
+    ///
+    /// For files with multiple named tensors, use
+    /// [`from_safetensors_named`](Self::from_safetensors_named) instead.
+    #[cfg(feature = "safetensors-input")]
+    pub fn from_safetensors(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let buffer = std::fs::read(path).map_err(|e| QuantizeError::Calibration {
+            reason: format!("Failed to read safetensors file '{}': {e}", path.display()),
+        })?;
+        let tensors = safetensors::SafeTensors::deserialize(&buffer).map_err(|e| {
+            QuantizeError::Calibration {
+                reason: format!("Failed to parse safetensors file: {e}"),
+            }
+        })?;
+        let names: Vec<String> = tensors.names().into_iter().map(|s| s.to_string()).collect();
+        if names.is_empty() {
+            return Err(QuantizeError::Calibration {
+                reason: "safetensors file contains no tensors".into(),
+            });
+        }
+        if names.len() > 1 {
+            return Err(QuantizeError::Calibration {
+                reason: format!(
+                    "safetensors file contains {} tensors; pass one explicitly via \
+                     from_safetensors_named().  Available tensors: {}",
+                    names.len(),
+                    names.join(", ")
+                ),
+            });
+        }
+        Self::from_safetensors_view(&tensors, &names[0])
+    }
+
+    /// Load calibration samples from a specific named tensor inside a
+    /// `.safetensors` file.
+    ///
+    /// Requires the `safetensors-input` feature.
+    #[cfg(feature = "safetensors-input")]
+    pub fn from_safetensors_named(path: impl AsRef<Path>, tensor_name: &str) -> Result<Self> {
+        let path = path.as_ref();
+        let buffer = std::fs::read(path).map_err(|e| QuantizeError::Calibration {
+            reason: format!("Failed to read safetensors file '{}': {e}", path.display()),
+        })?;
+        let tensors = safetensors::SafeTensors::deserialize(&buffer).map_err(|e| {
+            QuantizeError::Calibration {
+                reason: format!("Failed to parse safetensors file: {e}"),
+            }
+        })?;
+        Self::from_safetensors_view(&tensors, tensor_name)
+    }
+
+    #[cfg(feature = "safetensors-input")]
+    fn from_safetensors_view(
+        tensors: &safetensors::SafeTensors<'_>,
+        tensor_name: &str,
+    ) -> Result<Self> {
+        use safetensors::Dtype;
+
+        let view = tensors
+            .tensor(tensor_name)
+            .map_err(|e| QuantizeError::Calibration {
+                reason: format!(
+                    "Tensor '{}' not found in safetensors file: {e}",
+                    tensor_name
+                ),
+            })?;
+
+        if view.dtype() != Dtype::F32 {
+            return Err(QuantizeError::Calibration {
+                reason: format!(
+                    "Tensor '{}' has dtype {:?}; only F32 is supported for calibration input",
+                    tensor_name,
+                    view.dtype()
+                ),
+            });
+        }
+
+        let shape: Vec<usize> = view.shape().to_vec();
+        if shape.len() < 2 {
+            return Err(QuantizeError::Calibration {
+                reason: format!(
+                    "Calibration tensor must be at least 2-dimensional (batch, ...). \
+                     Got shape {:?}",
+                    shape
+                ),
+            });
+        }
+        let expected_bytes: usize = shape.iter().product::<usize>() * std::mem::size_of::<f32>();
+        let raw = view.data();
+        if raw.len() != expected_bytes {
+            return Err(QuantizeError::Calibration {
+                reason: format!(
+                    "Tensor '{}' data size {} bytes does not match shape {:?} \
+                     × 4 = {} bytes",
+                    tensor_name,
+                    raw.len(),
+                    shape,
+                    expected_bytes
+                ),
+            });
+        }
+
+        // safetensors stores data little-endian, which matches every target
+        // quantize-rs builds on today.  Decode per-f32 explicitly to stay
+        // endian-safe rather than relying on an unchecked cast.
+        let data: Vec<f32> = raw
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+
+        let num_samples = shape[0];
+        let sample_size: usize = shape[1..].iter().product();
+        let mut samples = Vec::with_capacity(num_samples);
+        for i in 0..num_samples {
+            let start = i * sample_size;
+            let end = start + sample_size;
+            samples.push(data[start..end].to_vec());
+        }
+
+        Ok(Self {
+            samples,
+            shape: shape[1..].to_vec(),
+        })
+    }
+
     /// Generate random calibration samples uniformly distributed in `range`.
     ///
     /// # Errors
@@ -214,5 +344,59 @@ mod tests {
 
         let dataset = CalibrationDataset::from_samples(samples, vec![3]).unwrap();
         assert_eq!(dataset.len(), 2);
+    }
+
+    #[cfg(feature = "safetensors-input")]
+    #[test]
+    fn test_from_safetensors_round_trip() {
+        use safetensors::{serialize, tensor::TensorView, Dtype};
+        use std::collections::HashMap;
+
+        // Build 3 samples of shape [2, 4] = 24 floats.
+        let data: Vec<f32> = (0..24).map(|i| i as f32 * 0.1).collect();
+        let raw: Vec<u8> = data.iter().flat_map(|&f| f.to_le_bytes()).collect();
+        let view = TensorView::new(Dtype::F32, vec![3, 2, 4], &raw).unwrap();
+        let mut tensors = HashMap::new();
+        tensors.insert("input".to_string(), view);
+        let bytes = serialize(&tensors, &None).unwrap();
+
+        let tmp = tempfile::NamedTempFile::with_suffix(".safetensors").unwrap();
+        std::fs::write(tmp.path(), &bytes).unwrap();
+
+        let dataset = CalibrationDataset::from_safetensors(tmp.path()).unwrap();
+        assert_eq!(dataset.len(), 3);
+        assert_eq!(dataset.sample_shape(), &[2, 4]);
+        // Each sample holds 8 floats.
+        assert_eq!(dataset.samples[0].len(), 8);
+        // First float of sample 0 is 0.0, first of sample 1 is 0.8 (index 8 * 0.1).
+        assert!((dataset.samples[0][0] - 0.0).abs() < 1e-6);
+        assert!((dataset.samples[1][0] - 0.8).abs() < 1e-6);
+    }
+
+    #[cfg(feature = "safetensors-input")]
+    #[test]
+    fn test_from_safetensors_multi_tensor_errors_without_name() {
+        use safetensors::{serialize, tensor::TensorView, Dtype};
+        use std::collections::HashMap;
+
+        let data: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        let raw: Vec<u8> = data.iter().flat_map(|&f| f.to_le_bytes()).collect();
+        let v1 = TensorView::new(Dtype::F32, vec![2, 4], &raw).unwrap();
+        let v2 = TensorView::new(Dtype::F32, vec![2, 4], &raw).unwrap();
+        let mut tensors = HashMap::new();
+        tensors.insert("a".to_string(), v1);
+        tensors.insert("b".to_string(), v2);
+        let bytes = serialize(&tensors, &None).unwrap();
+
+        let tmp = tempfile::NamedTempFile::with_suffix(".safetensors").unwrap();
+        std::fs::write(tmp.path(), &bytes).unwrap();
+
+        let err = CalibrationDataset::from_safetensors(tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("contains 2 tensors"));
+
+        // But named access works.
+        let dataset = CalibrationDataset::from_safetensors_named(tmp.path(), "a").unwrap();
+        assert_eq!(dataset.len(), 2);
+        assert_eq!(dataset.sample_shape(), &[4]);
     }
 }

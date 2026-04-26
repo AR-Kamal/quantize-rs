@@ -302,6 +302,109 @@ mod tests {
         let p50 = stats.percentile(50.0);
         assert!((p50 - 0.0).abs() < 0.3);
     }
+
+    // -----------------------------------------------------------------------
+    // Histogram-direct range optimization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_minmax_from_stats_matches_raw_data() {
+        let data: Vec<f32> = (0..1000).map(|i| (i as f32 - 500.0) / 500.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        let from_stats = calculate_optimal_range_from_stats(&stats, CalibrationMethod::MinMax);
+        let from_raw = calculate_optimal_range(&data, CalibrationMethod::MinMax);
+
+        // MinMax path must be identical.
+        assert_eq!(from_stats.0, from_raw.0);
+        assert_eq!(from_stats.1, from_raw.1);
+    }
+
+    #[test]
+    fn test_percentile_from_stats_is_deterministic() {
+        // Same stats → same range, on every call.  The raw-data path used to
+        // regenerate samples with a thread-local RNG, making results unstable.
+        let data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 100.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        let r1 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.9));
+        let r2 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.9));
+        let r3 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.9));
+
+        assert_eq!(r1, r2);
+        assert_eq!(r2, r3);
+    }
+
+    #[test]
+    fn test_mse_from_stats_is_deterministic() {
+        let data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 100.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        let r1 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::MSE);
+        let r2 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::MSE);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn test_entropy_from_stats_is_deterministic() {
+        let data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 100.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        let r1 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Entropy);
+        let r2 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Entropy);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn test_all_methods_produce_finite_ranges() {
+        // Regression guard: the histogram-direct optimizers must never
+        // produce NaN/Inf for any reasonable input, including skewed data.
+        let data: Vec<f32> = (0..200).map(|i| (i as f32 / 50.0) - 1.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        for method in [
+            CalibrationMethod::MinMax,
+            CalibrationMethod::Percentile(99.9),
+            CalibrationMethod::Entropy,
+            CalibrationMethod::MSE,
+        ] {
+            let (lo, hi) = calculate_optimal_range_from_stats(&stats, method);
+            assert!(lo.is_finite(), "{:?}: lower bound not finite", method);
+            assert!(hi.is_finite(), "{:?}: upper bound not finite", method);
+            assert!(lo <= hi, "{:?}: lo ({}) > hi ({})", method, lo, hi);
+        }
+    }
+
+    #[test]
+    fn test_stats_based_matches_raw_based_on_bulk_data() {
+        // For a well-populated histogram, the stats-based and raw-based
+        // percentile paths should agree closely (histogram has 256 bins → the
+        // result is within one bin width).
+        let data: Vec<f32> = (0..1000).map(|i| (i as f32 - 500.0) / 100.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        let from_stats =
+            calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.0));
+        let from_raw = calculate_optimal_range(&data, CalibrationMethod::Percentile(99.0));
+
+        let width = stats.max() - stats.min();
+        let bin_width = width / 256.0;
+        let tolerance = 3.0 * bin_width + 1e-4;
+        assert!(
+            (from_stats.0 - from_raw.0).abs() <= tolerance,
+            "lower percentile drift: stats={} raw={} tol={}",
+            from_stats.0,
+            from_raw.0,
+            tolerance
+        );
+        assert!(
+            (from_stats.1 - from_raw.1).abs() <= tolerance,
+            "upper percentile drift: stats={} raw={} tol={}",
+            from_stats.1,
+            from_raw.1,
+            tolerance
+        );
+    }
 }
 
 /// Compute the optimal quantization range for `data` using the given method.
@@ -335,6 +438,32 @@ pub fn calculate_optimal_range(data: &[f32], method: CalibrationMethod) -> (f32,
         CalibrationMethod::Entropy => optimize_kl_divergence(data),
 
         CalibrationMethod::MSE => optimize_mse(data),
+    }
+}
+
+/// Compute the optimal quantization range directly from pre-collected
+/// [`ActivationStats`], without regenerating samples from the histogram.
+///
+/// This is the preferred path inside `Quantizer::with_calibration`: the stats
+/// already carry the full empirical distribution (min/max + 256-bin histogram),
+/// so there is no benefit to re-sampling and re-binning.  It's also
+/// deterministic (no RNG) and O(num_bins) instead of O(num_samples).
+pub fn calculate_optimal_range_from_stats(
+    stats: &ActivationStats,
+    method: CalibrationMethod,
+) -> (f32, f32) {
+    match method {
+        CalibrationMethod::MinMax => (stats.min(), stats.max()),
+
+        CalibrationMethod::Percentile(p) => {
+            let lower = stats.percentile(100.0 - p);
+            let upper = stats.percentile(p);
+            (lower, upper)
+        }
+
+        CalibrationMethod::Entropy => optimize_kl_from_stats(stats),
+
+        CalibrationMethod::MSE => optimize_mse_from_stats(stats),
     }
 }
 
@@ -450,4 +579,122 @@ fn calculate_quantization_mse(data: &[f32], min: f32, max: f32) -> f32 {
         / data.len() as f32;
 
     mse
+}
+
+// ---------------------------------------------------------------------------
+// Histogram-direct range optimization
+//
+// The functions below walk the 256-bin histogram carried by `ActivationStats`
+// instead of reconstructing samples.  They are deterministic, RNG-free, and
+// O(candidates × num_bins) in work — independent of the original dataset size.
+// ---------------------------------------------------------------------------
+
+/// KL divergence between the empirical histogram and a simulated INT8
+/// quantize → dequantize of that histogram, restricted to `[min, max]`.
+fn histogram_kl_divergence(stats: &ActivationStats, min: f32, max: f32) -> f32 {
+    if (max - min).abs() < 1e-8 {
+        return 0.0;
+    }
+    let hist = stats.histogram_data();
+    if hist.is_empty() {
+        return 0.0;
+    }
+
+    const NUM_REBINS: usize = 128;
+    let rebin_size = (max - min) / NUM_REBINS as f32;
+    let scale = (max - min) / 255.0;
+
+    let mut orig = vec![0.0_f32; NUM_REBINS];
+    let mut quant = vec![0.0_f32; NUM_REBINS];
+
+    for &(center, count) in &hist {
+        let clipped = center.clamp(min, max);
+        let count_f = count as f32;
+
+        let bin = ((clipped - min) / rebin_size).floor() as usize;
+        let bin = bin.min(NUM_REBINS - 1);
+        orig[bin] += count_f;
+
+        let q = ((clipped - min) / scale).round();
+        let dq = min + q * scale;
+        let qbin = ((dq.clamp(min, max) - min) / rebin_size).floor() as usize;
+        let qbin = qbin.min(NUM_REBINS - 1);
+        quant[qbin] += count_f;
+    }
+
+    let total: f32 = orig.iter().sum();
+    if total == 0.0 {
+        return 0.0;
+    }
+
+    let epsilon = 1e-10_f32;
+    let denom = total + epsilon * NUM_REBINS as f32;
+    let mut kl = 0.0_f32;
+    for i in 0..NUM_REBINS {
+        let p = (orig[i] + epsilon) / denom;
+        let q = (quant[i] + epsilon) / denom;
+        kl += p * (p / q).ln();
+    }
+    kl
+}
+
+/// Quantization MSE computed directly on the histogram: sum of
+/// `(center - dequantize(quantize(center)))² × count` weighted by count.
+fn histogram_quantization_mse(stats: &ActivationStats, min: f32, max: f32) -> f32 {
+    if (max - min).abs() < 1e-8 {
+        return 0.0;
+    }
+
+    let scale = (max - min) / 255.0;
+    let mut weighted_sse = 0.0_f64;
+    let mut total_count = 0_u64;
+
+    for (center, count) in stats.histogram_data() {
+        let clipped = center.clamp(min, max);
+        let q = ((clipped - min) / scale).round().clamp(0.0, 255.0);
+        let dq = min + q * scale;
+        let err = (center - dq) as f64;
+        weighted_sse += err * err * count as f64;
+        total_count += count as u64;
+    }
+
+    if total_count == 0 {
+        0.0
+    } else {
+        (weighted_sse / total_count as f64) as f32
+    }
+}
+
+fn optimize_kl_from_stats(stats: &ActivationStats) -> (f32, f32) {
+    let candidates = [99.0, 99.5, 99.9, 99.95, 99.99];
+    let mut best_range = (stats.min(), stats.max());
+    let mut best_kl = f32::INFINITY;
+
+    for &percentile in &candidates {
+        let lower = stats.percentile(100.0 - percentile);
+        let upper = stats.percentile(percentile);
+        let kl = histogram_kl_divergence(stats, lower, upper);
+        if kl < best_kl {
+            best_kl = kl;
+            best_range = (lower, upper);
+        }
+    }
+    best_range
+}
+
+fn optimize_mse_from_stats(stats: &ActivationStats) -> (f32, f32) {
+    let candidates = [99.0, 99.5, 99.9, 99.95, 99.99];
+    let mut best_range = (stats.min(), stats.max());
+    let mut best_mse = f32::INFINITY;
+
+    for &percentile in &candidates {
+        let lower = stats.percentile(100.0 - percentile);
+        let upper = stats.percentile(percentile);
+        let mse = histogram_quantization_mse(stats, lower, upper);
+        if mse < best_mse {
+            best_mse = mse;
+            best_range = (lower, upper);
+        }
+    }
+    best_range
 }

@@ -30,6 +30,18 @@ pub struct Config {
     #[serde(default)]
     pub min_elements: usize,
 
+    /// Store INT4 weights as native ONNX `DataType::Int4` (opset 21).
+    /// Only affects models quantized with `bits=4` or per-layer INT4 overrides.
+    /// Defaults to `false` (widen INT4 to INT8, compatible with opset 10+).
+    #[serde(default)]
+    pub native_int4: bool,
+
+    /// Use symmetric quantization (zero_point == 0).  Required by most
+    /// ONNX Runtime / TensorRT INT8 matmul kernels for per-channel weight
+    /// quantization.  Defaults to `false` (asymmetric).
+    #[serde(default)]
+    pub symmetric: bool,
+
     /// Per-model configuration overrides.
     #[serde(default)]
     pub models: Vec<ModelConfig>,
@@ -73,6 +85,14 @@ pub struct ModelConfig {
     /// Override the global `min_elements` threshold for this model.
     #[serde(default)]
     pub min_elements: Option<usize>,
+
+    /// Override the global `native_int4` flag for this model.
+    #[serde(default)]
+    pub native_int4: Option<bool>,
+
+    /// Override the global `symmetric` flag for this model.
+    #[serde(default)]
+    pub symmetric: Option<bool>,
 }
 
 /// Batch processing configuration for quantizing multiple models.
@@ -226,6 +246,16 @@ impl Config {
     /// Effective min-elements threshold for a model.
     pub fn get_min_elements(&self, model: &ModelConfig) -> usize {
         model.min_elements.unwrap_or(self.min_elements)
+    }
+
+    /// Effective native-INT4 flag for a model (override or global default).
+    pub fn get_native_int4(&self, model: &ModelConfig) -> bool {
+        model.native_int4.unwrap_or(self.native_int4)
+    }
+
+    /// Effective symmetric flag for a model (override or global default).
+    pub fn get_symmetric(&self, model: &ModelConfig) -> bool {
+        model.symmetric.unwrap_or(self.symmetric)
     }
 
     /// Effective per-layer bit-width overrides for a model.

@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::quantization_nodes::{
     build_dequantize_linear_node, build_quantized_weight_tensor, build_scale_tensor,
-    build_zero_point_tensor, DequantLinearNames,
+    build_zero_point_tensor, DequantLinearNames, StorageFormat,
 };
 
 // ===========================================================================
@@ -23,7 +23,7 @@ use super::quantization_nodes::{
 // ===========================================================================
 
 /// One weight to convert: FP32 initializer → INT8 + DequantizeLinear block.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct QdqWeightInput {
     /// Original initializer name (e.g., `"conv1.weight"`)
     pub original_name: String,
@@ -41,6 +41,30 @@ pub struct QdqWeightInput {
     pub bits: u8,
     /// Per-channel quantization axis, or `None` for per-tensor.
     pub axis: Option<usize>,
+}
+
+/// Options controlling how a quantized model is written to disk.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SaveOptions {
+    /// Use native ONNX INT4 storage (opset 21, `DataType::Int4`) instead of
+    /// widening INT4 values into INT8 bytes.
+    ///
+    /// Native storage halves the on-disk size of INT4-quantized weights
+    /// (true 8× compression from FP32) but raises the required opset to 21.
+    /// Older runtimes without opset 21 support will refuse to load the model.
+    /// Defaults to `false` for backward compatibility.
+    ///
+    /// Only affects weights where [`QdqWeightInput::bits`] is 4; INT8 weights
+    /// are stored as INT8 regardless of this flag.
+    pub native_int4: bool,
+}
+
+impl SaveOptions {
+    /// Opt in to native INT4 storage (requires opset 21).
+    pub fn with_native_int4(mut self, enabled: bool) -> Self {
+        self.native_int4 = enabled;
+        self
+    }
 }
 
 /// Result of a graph-connectivity check.
@@ -269,12 +293,24 @@ fn upgrade_deprecated_ops(graph: &mut GraphProto, old_opset: i64, new_opset: i64
 /// ---
 /// ### INT4 storage note
 ///
-/// ONNX `DequantizeLinear` requires INT8 input in opsets < 21.  INT4-quantized
-/// values (range [-8, 7]) are widened to INT8 here.  The quantization *accuracy*
-/// is INT4-level (scale and zero_point were computed for the 4-bit range), but
-/// on-disk storage is 4× compression rather than the 8× that bit-packing would
-/// give.  True INT4 packing is planned for a future version (opset 21 or custom op).
+/// ONNX `DequantizeLinear` requires INT8 input in opsets < 21.  By default,
+/// INT4-quantized values (range [-8, 7]) are widened to INT8 here — 4×
+/// compression from FP32.  To get the full 8× compression, pass
+/// [`SaveOptions::with_native_int4(true)`] to [`apply_qdq_transform_with_options`];
+/// that emits native `DataType::Int4` (opset 21) with two values packed per byte.
 pub fn apply_qdq_transform(graph: &mut GraphProto, inputs: &[QdqWeightInput]) -> Result<()> {
+    apply_qdq_transform_with_options(graph, inputs, SaveOptions::default())
+}
+
+/// Same as [`apply_qdq_transform`] but configurable via [`SaveOptions`].
+///
+/// Prefer this entry point for any new code; the short-form wrapper exists
+/// only for backward compatibility.
+pub fn apply_qdq_transform_with_options(
+    graph: &mut GraphProto,
+    inputs: &[QdqWeightInput],
+    options: SaveOptions,
+) -> Result<()> {
     // -----------------------------------------------------------------------
     // 0.  Snapshot shapes before modifying the initializer list
     // -----------------------------------------------------------------------
@@ -335,17 +371,24 @@ pub fn apply_qdq_transform(graph: &mut GraphProto, inputs: &[QdqWeightInput]) ->
 
         let names = DequantLinearNames::from_original(&inp.original_name);
 
+        let format = if options.native_int4 && inp.bits == 4 {
+            StorageFormat::NativeInt4
+        } else {
+            StorageFormat::Int8Widened
+        };
+
         graph.initializer.push(build_quantized_weight_tensor(
             &names,
             &inp.quantized_values,
             shape,
+            format,
         ));
         graph
             .initializer
             .push(build_scale_tensor(&names, &inp.scales));
         graph
             .initializer
-            .push(build_zero_point_tensor(&names, &inp.zero_points));
+            .push(build_zero_point_tensor(&names, &inp.zero_points, format));
 
         dq_nodes.push(build_dequantize_linear_node(&names, inp.axis));
     }

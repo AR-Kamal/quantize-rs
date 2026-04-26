@@ -1,6 +1,6 @@
 [package]
 name = "quantize-rs"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 authors = ["Abdul Rahman Kamal <abdulrahmandev141@gmail.com>"]
 description = "Neural network quantization toolkit for ONNX models"
@@ -33,6 +33,7 @@ anyhow = "1.0"
 colored = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
+serde_json = "1.0"
 toml = "0.8"
 
 # Calibration — optional heavy deps (tract inference engine, ndarray for .npy)
@@ -41,10 +42,18 @@ tract-core = { version = "0.21", optional = true }
 ndarray = { version = "0.15", optional = true }
 ndarray-npy = { version = "0.8", optional = true }
 
+# Memory-mapped model loading for multi-GB ONNX files (optional).
+memmap2 = { version = "0.9", optional = true }
+
+# HuggingFace .safetensors calibration input (optional).
+safetensors = { version = "0.4", optional = true }
+
 [features]
 default = ["calibration"]
 calibration = ["tract-onnx", "tract-core", "ndarray", "ndarray-npy"]
 python = ["pyo3"]
+mmap = ["memmap2"]
+safetensors-input = ["safetensors"]
 
 [build-dependencies]
 prost-build = "0.13"

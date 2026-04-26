@@ -93,26 +93,101 @@ pub fn build_dequantize_linear_node(names: &DequantLinearNames, axis: Option<usi
 }
 
 // ---------------------------------------------------------------------------
+// On-disk storage format
+// ---------------------------------------------------------------------------
+
+/// How quantized values are stored on disk inside the ONNX initializer.
+///
+/// ONNX `DequantizeLinear` accepted only INT8 inputs before opset 21.  From
+/// opset 21 it also accepts native `INT4` (and `UINT4`), which is 2× smaller
+/// on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageFormat {
+    /// INT4 values widened to INT8 bytes.  Compatible with opset 10+ — the
+    /// default for backward compatibility, but gives only 4× compression.
+    Int8Widened,
+    /// Native `DataType::Int4` with two values packed per byte.  Requires
+    /// opset 21.  Gives the full 8× compression for INT4 models.
+    NativeInt4,
+}
+
+/// Pack INT4 values in ONNX wire-format layout: the element at the **even**
+/// index goes into the **low** nibble, odd index into the high nibble.
+///
+/// See the ONNX spec for `TensorProto` `DataType::Int4`.  This is the opposite
+/// nibble order from [`crate::pack_int4`], which uses the library's internal
+/// layout (val1 in high nibble).
+pub(crate) fn pack_int4_onnx(values: &[i8]) -> Vec<u8> {
+    let mut packed = Vec::with_capacity(values.len().div_ceil(2));
+    for chunk in values.chunks(2) {
+        let lo = (chunk[0] & 0x0F) as u8;
+        let hi = if chunk.len() > 1 {
+            (chunk[1] & 0x0F) as u8
+        } else {
+            0
+        };
+        packed.push((hi << 4) | lo);
+    }
+    packed
+}
+
+/// Unpack INT4 values stored in ONNX wire-format layout.  Returns exactly
+/// `num_values` `i8`s, sign-extended from 4 bits.
+pub(crate) fn unpack_int4_onnx(packed: &[u8], num_values: usize) -> Vec<i8> {
+    let mut values = Vec::with_capacity(num_values);
+    for &byte in packed {
+        let lo = byte & 0x0F;
+        let hi = (byte >> 4) & 0x0F;
+        values.push(sign_extend_nibble(lo));
+        if values.len() < num_values {
+            values.push(sign_extend_nibble(hi));
+        }
+    }
+    values.truncate(num_values);
+    values
+}
+
+#[inline]
+fn sign_extend_nibble(nibble: u8) -> i8 {
+    if nibble >= 8 {
+        (nibble as i8) | !0x0F
+    } else {
+        nibble as i8
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Initializer builders
 // ---------------------------------------------------------------------------
 
-/// INT8 tensor holding the quantized weight values.
+/// Tensor holding the quantized weight values.
 ///
-/// Shape matches the original FP32 tensor exactly.  For INT4-quantized values
-/// (range [-8, 7]), the i8 bytes are stored directly — see the INT4 note in
-/// `graph_builder::apply_qdq_transform`.
+/// Shape (`dims`) always matches the **logical** element count of the original
+/// FP32 tensor.  With [`StorageFormat::Int8Widened`] each element occupies one
+/// byte; with [`StorageFormat::NativeInt4`] two elements share a byte so
+/// `raw_data.len() == dims.product().div_ceil(2)`.
 pub fn build_quantized_weight_tensor(
     names: &DequantLinearNames,
     values: &[i8],
     shape: &[i64],
+    format: StorageFormat,
 ) -> TensorProto {
-    TensorProto {
-        name: names.quantized_name.clone(),
-        data_type: tensor_proto::DataType::Int8 as i32,
-        dims: shape.to_vec(),
-        // Each i8 value → one byte.  Reinterpret cast, not value conversion.
-        raw_data: values.iter().map(|&v| v as u8).collect(),
-        ..Default::default()
+    match format {
+        StorageFormat::Int8Widened => TensorProto {
+            name: names.quantized_name.clone(),
+            data_type: tensor_proto::DataType::Int8 as i32,
+            dims: shape.to_vec(),
+            // Each i8 value → one byte.  Reinterpret cast, not value conversion.
+            raw_data: values.iter().map(|&v| v as u8).collect(),
+            ..Default::default()
+        },
+        StorageFormat::NativeInt4 => TensorProto {
+            name: names.quantized_name.clone(),
+            data_type: tensor_proto::DataType::Int4 as i32,
+            dims: shape.to_vec(),
+            raw_data: pack_int4_onnx(values),
+            ..Default::default()
+        },
     }
 }
 
@@ -136,15 +211,29 @@ pub fn build_scale_tensor(names: &DequantLinearNames, scales: &[f32]) -> TensorP
     t
 }
 
-/// INT8 zero-point tensor.
+/// Zero-point tensor.  Data type matches the quantized weight:
+///   - [`StorageFormat::Int8Widened`]: `DataType::Int8`, one byte per value.
+///   - [`StorageFormat::NativeInt4`]: `DataType::Int4`, packed two per byte.
 ///
 /// For per-tensor, `zps` has one element → rank-0 scalar.
 /// For per-channel, `zps` has one per channel → rank-1 `[num_channels]`.
-pub fn build_zero_point_tensor(names: &DequantLinearNames, zps: &[i8]) -> TensorProto {
+pub fn build_zero_point_tensor(
+    names: &DequantLinearNames,
+    zps: &[i8],
+    format: StorageFormat,
+) -> TensorProto {
+    let (data_type, raw_data) = match format {
+        StorageFormat::Int8Widened => (
+            tensor_proto::DataType::Int8 as i32,
+            zps.iter().map(|&v| v as u8).collect(),
+        ),
+        StorageFormat::NativeInt4 => (tensor_proto::DataType::Int4 as i32, pack_int4_onnx(zps)),
+    };
+
     let mut t = TensorProto {
         name: names.zp_name.clone(),
-        data_type: tensor_proto::DataType::Int8 as i32,
-        raw_data: zps.iter().map(|&v| v as u8).collect(),
+        data_type,
+        raw_data,
         ..Default::default()
     };
     if zps.len() > 1 {
@@ -215,7 +304,7 @@ mod tests {
         let names = DequantLinearNames::from_original("w");
         let values = vec![1i8, -2, 3, -4, 5, 6];
         let shape = vec![2i64, 3];
-        let t = build_quantized_weight_tensor(&names, &values, &shape);
+        let t = build_quantized_weight_tensor(&names, &values, &shape, StorageFormat::Int8Widened);
 
         assert_eq!(t.name, "w_quantized");
         assert_eq!(t.data_type, tensor_proto::DataType::Int8 as i32);
@@ -252,7 +341,7 @@ mod tests {
     #[test]
     fn test_zero_point_tensor_scalar() {
         let names = DequantLinearNames::from_original("w");
-        let t = build_zero_point_tensor(&names, &[-3]);
+        let t = build_zero_point_tensor(&names, &[-3], StorageFormat::Int8Widened);
 
         assert_eq!(t.name, "w_zp");
         assert_eq!(t.data_type, tensor_proto::DataType::Int8 as i32);
@@ -263,7 +352,7 @@ mod tests {
     #[test]
     fn test_zero_point_tensor_per_channel() {
         let names = DequantLinearNames::from_original("w");
-        let t = build_zero_point_tensor(&names, &[-3, 0, 5]);
+        let t = build_zero_point_tensor(&names, &[-3, 0, 5], StorageFormat::Int8Widened);
 
         assert_eq!(t.dims.len(), 1);
         assert_eq!(t.dims[0], 3);
@@ -276,9 +365,101 @@ mod tests {
         let names = DequantLinearNames::from_original("w");
         let values = vec![-8i8, -1, 0, 7];
         let shape = vec![4i64];
-        let t = build_quantized_weight_tensor(&names, &values, &shape);
+        let t = build_quantized_weight_tensor(&names, &values, &shape, StorageFormat::Int8Widened);
 
         let recovered: Vec<i8> = t.raw_data.iter().map(|&b| b as i8).collect();
         assert_eq!(recovered, values);
+    }
+
+    // -----------------------------------------------------------------------
+    // Native INT4 (ONNX opset 21) tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_onnx_pack_layout_even_index_in_low_nibble() {
+        // ONNX spec: element at even index goes in the low nibble.
+        // [0x1, 0x2] → byte = (0x2 << 4) | 0x1 = 0x21
+        let packed = pack_int4_onnx(&[1, 2]);
+        assert_eq!(packed, vec![0x21]);
+
+        let packed = pack_int4_onnx(&[0, 0x7]);
+        assert_eq!(packed, vec![0x70]);
+    }
+
+    #[test]
+    fn test_onnx_pack_negative_values() {
+        // -1 in 4-bit two's complement is 0xF.
+        // [-1, -1] → byte = (0xF << 4) | 0xF = 0xFF
+        assert_eq!(pack_int4_onnx(&[-1, -1]), vec![0xFF]);
+
+        // [-8, 7] → byte = (0x7 << 4) | 0x8 = 0x78
+        assert_eq!(pack_int4_onnx(&[-8, 7]), vec![0x78]);
+    }
+
+    #[test]
+    fn test_onnx_pack_odd_length_zero_pads_high_nibble() {
+        // Single value in the low nibble, high nibble zero.
+        assert_eq!(pack_int4_onnx(&[0x3]), vec![0x03]);
+        assert_eq!(pack_int4_onnx(&[-1]), vec![0x0F]);
+    }
+
+    #[test]
+    fn test_onnx_pack_unpack_round_trip_all_values() {
+        let values: Vec<i8> = (-8..=7).collect();
+        let packed = pack_int4_onnx(&values);
+        let unpacked = unpack_int4_onnx(&packed, values.len());
+        assert_eq!(unpacked, values);
+        assert_eq!(packed.len(), 8, "16 values must pack to exactly 8 bytes");
+    }
+
+    #[test]
+    fn test_onnx_pack_unpack_round_trip_odd_length() {
+        let values: Vec<i8> = vec![-8, -1, 0, 7, -3];
+        let packed = pack_int4_onnx(&values);
+        let unpacked = unpack_int4_onnx(&packed, values.len());
+        assert_eq!(unpacked, values);
+        assert_eq!(packed.len(), 3, "5 values must pack to ceil(5/2) = 3 bytes");
+    }
+
+    #[test]
+    fn test_native_int4_weight_tensor_uses_int4_data_type() {
+        let names = DequantLinearNames::from_original("w");
+        let values = vec![-8i8, -1, 0, 7];
+        let shape = vec![4i64];
+        let t = build_quantized_weight_tensor(&names, &values, &shape, StorageFormat::NativeInt4);
+
+        assert_eq!(t.data_type, tensor_proto::DataType::Int4 as i32);
+        assert_eq!(t.dims, vec![4], "dims should be logical element count");
+        assert_eq!(t.raw_data.len(), 2, "4 values → 2 packed bytes");
+
+        let recovered = unpack_int4_onnx(&t.raw_data, values.len());
+        assert_eq!(recovered, values);
+    }
+
+    #[test]
+    fn test_native_int4_zero_point_scalar() {
+        let names = DequantLinearNames::from_original("w");
+        let t = build_zero_point_tensor(&names, &[-3], StorageFormat::NativeInt4);
+
+        assert_eq!(t.data_type, tensor_proto::DataType::Int4 as i32);
+        assert_eq!(t.dims.len(), 0, "scalar zp has rank 0");
+        assert_eq!(t.raw_data.len(), 1);
+
+        let recovered = unpack_int4_onnx(&t.raw_data, 1);
+        assert_eq!(recovered, vec![-3]);
+    }
+
+    #[test]
+    fn test_native_int4_zero_point_per_channel() {
+        let names = DequantLinearNames::from_original("w");
+        let zps = vec![-3, 0, 5, -1, 7];
+        let t = build_zero_point_tensor(&names, &zps, StorageFormat::NativeInt4);
+
+        assert_eq!(t.data_type, tensor_proto::DataType::Int4 as i32);
+        assert_eq!(t.dims, vec![5], "per-channel zp has rank 1");
+        assert_eq!(t.raw_data.len(), 3, "5 values → 3 packed bytes");
+
+        let recovered = unpack_int4_onnx(&t.raw_data, zps.len());
+        assert_eq!(recovered, zps);
     }
 }

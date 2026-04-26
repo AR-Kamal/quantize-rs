@@ -190,7 +190,8 @@ fn test_quantize_simple_model_int8() {
     assert_eq!(qinfo.len(), 1);
     assert_eq!(qinfo[0].name, "weight");
     assert_eq!(qinfo[0].bits, 8);
-    assert!(qinfo[0].scale > 0.0);
+    assert!(qinfo[0].scale() > 0.0);
+    assert_eq!(qinfo[0].scales.len(), 1, "per-tensor should have 1 scale");
 }
 
 #[test]
@@ -469,8 +470,8 @@ fn test_mixed_precision_quantization() {
     let w2_info = qinfo.iter().find(|q| q.name == "w2").expect("w2 not found");
     assert_eq!(w1_info.bits, 4, "w1 bits should be 4 in metadata");
     assert_eq!(w2_info.bits, 8, "w2 bits should be 8 in metadata");
-    assert!(w1_info.scale > 0.0);
-    assert!(w2_info.scale > 0.0);
+    assert!(w1_info.scale() > 0.0);
+    assert!(w2_info.scale() > 0.0);
 }
 
 /// Config file: layer_bits YAML/TOML round-trip and validation.
@@ -750,7 +751,11 @@ fn test_multilayer_full_round_trip() {
     let qinfo = reloaded.load_quantized_info();
     assert_eq!(qinfo.len(), 6, "all 6 weights should appear in metadata");
     for info in &qinfo {
-        assert!(info.scale > 0.0, "scale must be positive for {}", info.name);
+        assert!(
+            info.scale() > 0.0,
+            "scale must be positive for {}",
+            info.name
+        );
         assert_eq!(info.bits, 8);
     }
 }
@@ -966,7 +971,7 @@ fn test_real_model_int8() {
     );
     for info in &qinfo {
         assert_eq!(info.bits, 8);
-        assert!(info.scale > 0.0);
+        assert!(info.scale() > 0.0);
     }
 }
 
@@ -1006,7 +1011,7 @@ fn test_real_model_int4() {
     assert_eq!(qinfo.len(), qdq_data.len());
     for info in &qinfo {
         assert_eq!(info.bits, 4);
-        assert!(info.scale > 0.0);
+        assert!(info.scale() > 0.0);
     }
 }
 
@@ -1285,5 +1290,462 @@ fn test_calibrated_full_pipeline() {
     let qdq_info = reloaded.load_quantized_info();
     assert_eq!(qdq_info.len(), 1);
     assert_eq!(qdq_info[0].name, "weight");
-    assert!(qdq_info[0].scale > 0.0);
+    assert!(qdq_info[0].scale() > 0.0);
+}
+
+// ===========================================================================
+// Native INT4 storage (ONNX opset 21) — DataType::Int4 on disk
+// ===========================================================================
+
+use quantize_rs::onnx_utils::SaveOptions;
+
+/// Reload a quantized file's raw protobuf so tests can inspect on-disk bytes.
+fn reload_proto(path: &std::path::Path) -> ModelProto {
+    let buf = std::fs::read(path).unwrap();
+    ModelProto::decode(&buf[..]).unwrap()
+}
+
+fn get_default_opset(proto: &ModelProto) -> i64 {
+    proto
+        .opset_import
+        .iter()
+        .find(|o| o.domain.is_empty())
+        .map(|o| o.version)
+        .unwrap_or(0)
+}
+
+/// Native INT4 emits DataType::Int4 with two values packed per byte.
+#[test]
+fn test_native_int4_uses_int4_data_type_and_packs_raw_data() {
+    let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
+    let model_proto = build_minimal_model(&weight_data, &[4, 4]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let weights = model.extract_weights();
+
+    let quantizer = Quantizer::new(QuantConfig {
+        bits: 4,
+        ..Default::default()
+    });
+    let quantized = quantizer
+        .quantize_tensor(&weights[0].data, weights[0].shape.clone())
+        .unwrap();
+    let (scales, zero_points) = quantized.get_all_scales_zero_points();
+
+    let qdq_data = vec![QdqWeightInput {
+        original_name: weights[0].name.clone(),
+        quantized_values: quantized.data(),
+        scales,
+        zero_points,
+        bits: 4,
+        axis: None,
+    }];
+
+    let output_path = dir.path().join("model_native_int4.onnx");
+    model
+        .save_quantized_with_options(
+            &qdq_data,
+            &output_path,
+            SaveOptions::default().with_native_int4(true),
+        )
+        .unwrap();
+
+    // Inspect raw on-disk protobuf.
+    let proto = reload_proto(&output_path);
+    assert!(
+        get_default_opset(&proto) >= 21,
+        "native INT4 should bump opset to >= 21"
+    );
+
+    let graph = proto.graph.as_ref().unwrap();
+    let q_init = graph
+        .initializer
+        .iter()
+        .find(|i| i.name == "weight_quantized")
+        .expect("weight_quantized initializer missing");
+    assert_eq!(
+        q_init.data_type,
+        tensor_proto::DataType::Int4 as i32,
+        "weight tensor should be DataType::Int4"
+    );
+    assert_eq!(
+        q_init.dims,
+        vec![4, 4],
+        "dims should be logical element count"
+    );
+    assert_eq!(q_init.raw_data.len(), 8, "16 values → 8 packed bytes");
+
+    let zp_init = graph
+        .initializer
+        .iter()
+        .find(|i| i.name == "weight_zp")
+        .expect("weight_zp initializer missing");
+    assert_eq!(
+        zp_init.data_type,
+        tensor_proto::DataType::Int4 as i32,
+        "zero-point should also be Int4"
+    );
+
+    // Reload and verify load_quantized_info decodes correctly.
+    let reloaded = OnnxModel::load(&output_path).unwrap();
+    let info = reloaded.load_quantized_info();
+    assert_eq!(info.len(), 1);
+    assert_eq!(info[0].bits, 4);
+    assert_eq!(info[0].scales.len(), 1, "per-tensor → 1 scale");
+    assert_eq!(info[0].zero_points.len(), 1);
+    assert!(info[0].scale() > 0.0);
+
+    // Graph connectivity still valid after the transform.
+    let report = reloaded.validate_connectivity();
+    assert!(
+        report.valid,
+        "Connectivity broken: {:?}",
+        report.broken_refs
+    );
+}
+
+/// Native INT4 per-channel must emit a packed zero-point with one entry per channel.
+#[test]
+fn test_native_int4_per_channel_packs_all_zero_points() {
+    // Two channels with different ranges → distinct scale / zp values per channel.
+    let mut data = Vec::new();
+    for i in 0..16 {
+        data.push((i as f32) * 0.01);
+    }
+    for i in 0..16 {
+        data.push((i as f32) * 0.5);
+    }
+    let model_proto = build_minimal_model(&data, &[2, 16]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let weights = model.extract_weights();
+
+    let quantizer = Quantizer::new(QuantConfig {
+        bits: 4,
+        per_channel: true,
+        ..Default::default()
+    });
+    let quantized = quantizer
+        .quantize_tensor(&weights[0].data, weights[0].shape.clone())
+        .unwrap();
+    let (scales, zero_points) = quantized.get_all_scales_zero_points();
+    assert_eq!(scales.len(), 2);
+    assert_eq!(zero_points.len(), 2);
+
+    let qdq_data = vec![QdqWeightInput {
+        original_name: weights[0].name.clone(),
+        quantized_values: quantized.data(),
+        scales: scales.clone(),
+        zero_points: zero_points.clone(),
+        bits: 4,
+        axis: Some(0),
+    }];
+
+    let output_path = dir.path().join("model_native_pc.onnx");
+    model
+        .save_quantized_with_options(
+            &qdq_data,
+            &output_path,
+            SaveOptions::default().with_native_int4(true),
+        )
+        .unwrap();
+
+    let reloaded = OnnxModel::load(&output_path).unwrap();
+    let info = reloaded.load_quantized_info();
+    assert_eq!(info.len(), 1);
+    let info = &info[0];
+
+    assert!(info.is_per_channel(), "should be per-channel");
+    assert_eq!(
+        info.scales.len(),
+        2,
+        "per-channel: expected 2 scales, got {}",
+        info.scales.len()
+    );
+    assert_eq!(info.zero_points.len(), 2);
+
+    // Scales/zp on reload should match what was written.
+    for (i, (&s_out, &s_in)) in info.scales.iter().zip(scales.iter()).enumerate() {
+        assert!(
+            (s_out - s_in).abs() < 1e-6,
+            "scale[{}] mismatch: reloaded {} vs saved {}",
+            i,
+            s_out,
+            s_in
+        );
+    }
+    for (i, (&zp_out, &zp_in)) in info.zero_points.iter().zip(zero_points.iter()).enumerate() {
+        assert_eq!(
+            zp_out, zp_in,
+            "zero_point[{}] mismatch: reloaded {} vs saved {}",
+            i, zp_out, zp_in
+        );
+    }
+}
+
+/// `load_quantized_info` must return all per-channel scales/zps, not just the first.
+///
+/// This is the bug exposed by #3 in the analysis: the previous implementation
+/// read only `raw_data[0]` / `float_data[0]` and silently dropped the rest.
+#[test]
+fn test_load_quantized_info_preserves_all_per_channel_values() {
+    // Channel-0 tiny range, channel-1 much larger — ensures distinct scales.
+    let mut data = Vec::new();
+    data.extend(std::iter::repeat_n(0.01_f32, 8));
+    data.extend(std::iter::repeat_n(5.0_f32, 8));
+    let model_proto = build_minimal_model(&data, &[2, 8]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let weights = model.extract_weights();
+
+    let quantizer = Quantizer::new(QuantConfig {
+        bits: 8,
+        per_channel: true,
+        ..Default::default()
+    });
+    let quantized = quantizer
+        .quantize_tensor(&weights[0].data, weights[0].shape.clone())
+        .unwrap();
+    let (scales, zero_points) = quantized.get_all_scales_zero_points();
+    assert_eq!(scales.len(), 2);
+    // Channel-0 scale must be much smaller than channel-1 to distinguish them.
+    assert!(
+        scales[0] < scales[1],
+        "test precondition: scales[0] ({}) should be < scales[1] ({})",
+        scales[0],
+        scales[1]
+    );
+
+    let qdq_data = vec![QdqWeightInput {
+        original_name: weights[0].name.clone(),
+        quantized_values: quantized.data(),
+        scales: scales.clone(),
+        zero_points: zero_points.clone(),
+        bits: 8,
+        axis: Some(0),
+    }];
+
+    let output_path = dir.path().join("model_pc_check.onnx");
+    model.save_quantized(&qdq_data, &output_path).unwrap();
+
+    let reloaded = OnnxModel::load(&output_path).unwrap();
+    let info = reloaded.load_quantized_info();
+    assert_eq!(info.len(), 1);
+    let info = &info[0];
+
+    // The whole point: both channel values survive the reload.
+    assert_eq!(info.scales.len(), 2, "both per-channel scales must load");
+    assert_eq!(info.zero_points.len(), 2);
+    assert!(info.is_per_channel());
+    for (a, b) in info.scales.iter().zip(scales.iter()) {
+        assert!((a - b).abs() < 1e-6);
+    }
+    assert_eq!(info.zero_points, zero_points);
+}
+
+/// Without native_int4, INT4 weights are widened to INT8 (backward compat).
+#[test]
+fn test_int4_without_native_flag_still_widens_to_int8() {
+    let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
+    let model_proto = build_minimal_model(&weight_data, &[4, 4]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let weights = model.extract_weights();
+
+    let quantized = Quantizer::new(QuantConfig {
+        bits: 4,
+        ..Default::default()
+    })
+    .quantize_tensor(&weights[0].data, weights[0].shape.clone())
+    .unwrap();
+    let (scales, zero_points) = quantized.get_all_scales_zero_points();
+
+    let qdq_data = vec![QdqWeightInput {
+        original_name: weights[0].name.clone(),
+        quantized_values: quantized.data(),
+        scales,
+        zero_points,
+        bits: 4,
+        axis: None,
+    }];
+
+    let output_path = dir.path().join("model_int4_widened.onnx");
+    model.save_quantized(&qdq_data, &output_path).unwrap();
+
+    let proto = reload_proto(&output_path);
+    let graph = proto.graph.as_ref().unwrap();
+    let q_init = graph
+        .initializer
+        .iter()
+        .find(|i| i.name == "weight_quantized")
+        .unwrap();
+    assert_eq!(
+        q_init.data_type,
+        tensor_proto::DataType::Int8 as i32,
+        "default path keeps INT8 widening for backward compat"
+    );
+    assert_eq!(q_init.raw_data.len(), 16, "widened: 1 byte per element");
+
+    // Opset must not have been bumped to 21 — default path targets opset 10.
+    assert!(
+        get_default_opset(&proto) < 21,
+        "default INT4 path must not require opset 21"
+    );
+}
+
+// ===========================================================================
+// Symmetric per-channel quantization — ORT/TensorRT kernel compatibility
+// ===========================================================================
+
+/// End-to-end: per-channel INT8 symmetric → save → reload.  Every zero-point
+/// in the reloaded model must be 0, which is what ORT / TensorRT INT8
+/// matmul kernels require for fast per-channel weight paths.
+#[test]
+fn test_symmetric_per_channel_reloaded_zero_points_all_zero() {
+    // Three channels with different (and asymmetric) ranges — under asymmetric
+    // quantization each channel would get a distinct non-zero zero-point.
+    let mut data = Vec::new();
+    for i in 0..32 {
+        data.push((i as f32 - 8.0) * 0.05); // channel 0: [-0.4, 1.15]
+    }
+    for i in 0..32 {
+        data.push((i as f32 - 5.0) * 0.2); // channel 1: [-1.0, 5.4]
+    }
+    for i in 0..32 {
+        data.push((i as f32 - 30.0) * 0.01); // channel 2: [-0.3, 0.01]
+    }
+    let model_proto = build_minimal_model(&data, &[3, 32]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let weights = model.extract_weights();
+
+    let quantizer = Quantizer::new(QuantConfig {
+        bits: 8,
+        per_channel: true,
+        symmetric: true,
+        ..Default::default()
+    });
+    let quantized = quantizer
+        .quantize_tensor(&weights[0].data, weights[0].shape.clone())
+        .unwrap();
+    let (scales, zero_points) = quantized.get_all_scales_zero_points();
+
+    // Before save: zero-points already all zero.
+    assert_eq!(scales.len(), 3, "expected one scale per channel");
+    assert_eq!(zero_points, vec![0, 0, 0], "symmetric: all zp must be 0");
+
+    // Round-trip through the QDQ save path.
+    let qdq_data = vec![QdqWeightInput {
+        original_name: weights[0].name.clone(),
+        quantized_values: quantized.data(),
+        scales,
+        zero_points,
+        bits: 8,
+        axis: Some(0),
+    }];
+    let output_path = dir.path().join("model_symmetric_pc.onnx");
+    model.save_quantized(&qdq_data, &output_path).unwrap();
+
+    let reloaded = OnnxModel::load(&output_path).unwrap();
+    let info = reloaded.load_quantized_info();
+    assert_eq!(info.len(), 1);
+    let info = &info[0];
+    assert!(info.is_per_channel());
+    assert_eq!(info.zero_points.len(), 3);
+    for (i, &zp) in info.zero_points.iter().enumerate() {
+        assert_eq!(
+            zp, 0,
+            "channel {} zero-point must be 0 for ORT INT8 kernels; got {}",
+            i, zp
+        );
+    }
+
+    // Sanity: each scale must still be non-zero and finite.
+    for (i, &s) in info.scales.iter().enumerate() {
+        assert!(
+            s > 0.0 && s.is_finite(),
+            "channel {} scale invalid: {}",
+            i,
+            s
+        );
+    }
+}
+
+/// Asymmetric per-channel on the same skewed data produces at least one
+/// non-zero zero-point — regression guard that the symmetric flag actually
+/// changes behaviour (and not by happy accident).
+#[test]
+fn test_asymmetric_per_channel_produces_nonzero_zp_on_skewed_data() {
+    // Weight with all-positive range on channel 1 → asymmetric zp != 0.
+    let mut data = Vec::new();
+    data.extend(std::iter::repeat_n(-0.5_f32, 16));
+    data.extend(std::iter::repeat_n(2.0_f32, 16));
+    let model_proto = build_minimal_model(&data, &[2, 16]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let weights = model.extract_weights();
+
+    // Asymmetric (default).
+    let quantizer = Quantizer::new(QuantConfig {
+        bits: 8,
+        per_channel: true,
+        symmetric: false,
+        ..Default::default()
+    });
+    let quantized = quantizer
+        .quantize_tensor(&weights[0].data, weights[0].shape.clone())
+        .unwrap();
+    let (_, zps) = quantized.get_all_scales_zero_points();
+    assert!(
+        zps.iter().any(|&z| z != 0),
+        "asymmetric per-channel on skewed data should yield a non-zero zp; got {:?}",
+        zps
+    );
+}
+
+// ===========================================================================
+// mmap-backed load (feature = "mmap")
+// ===========================================================================
+
+#[cfg(feature = "mmap")]
+#[test]
+fn test_load_mmap_produces_same_model_info_as_load() {
+    let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
+    let model_proto = build_minimal_model(&weight_data, &[4, 4]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_model_to_tempfile(&model_proto, &dir, "mmap_eq.onnx");
+
+    let via_load = OnnxModel::load(&path).unwrap();
+    let via_mmap = OnnxModel::load_mmap(&path).unwrap();
+
+    let a = via_load.info();
+    let b = via_mmap.info();
+    assert_eq!(a.name, b.name);
+    assert_eq!(a.num_nodes, b.num_nodes);
+    assert_eq!(a.inputs, b.inputs);
+    assert_eq!(a.outputs, b.outputs);
+
+    let wa = via_load.extract_weights();
+    let wb = via_mmap.extract_weights();
+    assert_eq!(wa.len(), wb.len());
+    assert_eq!(wa[0].name, wb[0].name);
+    assert_eq!(wa[0].data, wb[0].data);
 }

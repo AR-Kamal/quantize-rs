@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-04-25
+
+### Added
+
+- **Native INT4 storage** (`SaveOptions::with_native_int4(true)`, CLI `--native-int4`, Python `native_int4=True`): writes INT4 weights as ONNX `DataType::Int4` (opset 21) instead of widening to INT8 bytes. Gives true 8x on-disk compression. Has no effect on INT8-only models. ONNX wire-format INT4 packing puts the even index in the low nibble (distinct from the internal `pack_int4` layout, which puts `val1` in the high nibble); both round-trip cleanly through `pack_int4_onnx` / `unpack_int4_onnx`.
+- **Symmetric quantization** (`QuantConfig.symmetric`, CLI `--symmetric`, Python `symmetric=True`): forces `zero_point == 0` and uses a balanced range `[-|max|, +|max|]`. Required by most ONNX Runtime / TensorRT INT8 matmul kernels for per-channel weight quantization. New constructors: `QuantParams::from_range_symmetric`, `from_f32_symmetric`, `from_f32_per_channel_symmetric`, `from_f32_with_range_symmetric`.
+- **`Quantizer::quantize_model(&self, model: &OnnxModel) -> Result<Vec<QuantizedWeightOutput>>`**: consolidated entry point that runs the full filter / parallel / `layer_bits` pipeline. CLI `quantize` / `batch` / `calibrate` and both Python functions now route through it, eliminating ~200 lines of duplicated logic and fixing a bug where the Python calibration path silently skipped `excluded_layers`, `min_elements`, and `layer_bits`.
+- **`QuantizedWeightOutput { qdq, quantized_size_bytes, mse }`** struct returned from `quantize_model`.
+- **`SaveOptions { native_int4: bool }`** with builder methods (`with_native_int4`). New `OnnxModel::save_quantized_with_options(...)` and `apply_qdq_transform_with_options(...)`. Existing `save_quantized` / `apply_qdq_transform` remain as thin wrappers.
+- **Memory-mapped model loading** (feature `mmap`, dependency `memmap2`): `OnnxModel::load_mmap()` streams multi-GB ONNX files without copying the full bytes into RAM.
+- **safetensors calibration input** (feature `safetensors-input`, dependency `safetensors`): `CalibrationDataset::from_safetensors`, `from_safetensors_named` -- load calibration tensors directly from HuggingFace `.safetensors` files.
+- **JSON output** for `validate` / `info` / `benchmark` CLI commands via `--format json`. New `ValidateReport`, `InfoReport`, `BenchmarkReport` serde structs. Banner is suppressed in JSON mode so stdout is parseable.
+- **Parallel batch processing**: `quantize-rs batch ... --jobs N` runs N model conversions concurrently via a rayon `ThreadPoolBuilder`, with stdout serialized through a `Mutex` to keep progress lines intact.
+- **Histogram-direct calibration optimization** (`calculate_optimal_range_from_stats`, `histogram_kl_divergence`, `histogram_quantization_mse`, `optimize_kl_from_stats`, `optimize_mse_from_stats`): KL/MSE range search now reads the histogram directly instead of regenerating samples through an RNG. Deterministic and ~2x faster on the calibration path.
+- **`QuantizedWeightInfo::storage_bytes`**: actual byte count from `raw_data.len()`, replacing the previous heuristic. Fixes `benchmark`'s weight-compression ratio reporting `4.0` for native-INT4 models that should be `8.0`.
+- **Filter flags on `calibrate`**: `--exclude`, `--min-elements`, `--layer-bits`, `--native-int4`, `--symmetric` now available on the CLI calibrate subcommand (previously only on `quantize` / `batch`).
+- **Fuzz target** (`fuzz/`): standalone `cargo-fuzz` workspace with one `onnx_load` target stress-testing `OnnxModel::from_bytes`. See `fuzz/README.md`.
+- **`OnnxModel::from_bytes(&[u8])`**: in-memory load, used by the fuzz target and useful for processing models from non-file sources.
+- ~25 new integration tests covering native INT4, symmetric round-trip, mmap parity, safetensors loading, JSON output schemas, and benchmark structure-preservation. Total test count: **136 with default features** (95 unit + 24 integration + 17 property-based), **139 with `--all-features`**.
+
+### Changed
+
+- **Performance:** ~25% measured speedup on INT4 per-channel quantization. Replaces per-channel `Vec` allocation with `chunks_exact` slice iteration in the hot loop; removes a per-element division in `to_f32` dequantization.
+- `validate` and `benchmark` use a QDQ-aware structure check: the expected post-transform node count is `original_nodes + DequantizeLinear_count`, and the input set may grow by the number of new quantized initializers exposed as graph inputs. The previous strict equality check reported false negatives on every valid QDQ model.
+- `batch` command's terminal banner now distinguishes "all skipped" (when `--skip-existing` matched everything) from "all succeeded" -- previously both printed the same green check.
+- Python bindings (`quantize`, `quantize_with_calibration`) accept `native_int4=False` and `symmetric=False` kwargs. Both functions now share the same `Quantizer::quantize_model` pipeline (the calibration path previously bypassed filtering and `layer_bits`).
+- `QuantConfig` gains `symmetric: bool`; existing struct-literal callers need `..Default::default()` on the trailing fields.
+
+### Fixed
+
+- **Per-channel scale/zero_point round-trip:** `QuantizedWeightInfo` previously stored single `scale: f32` / `zero_point: i8` fields, silently dropping per-channel data on the read-back path. Now stores `scales: Vec<f32>` / `zero_points: Vec<i8>` with `scale()` / `zero_point()` accessors and `is_per_channel()`. **BREAKING** for direct field access; the `scale()` / `zero_point()` methods provide the previous shape for per-tensor consumers.
+- **Native-INT4 byte count:** `benchmark` now reports the correct on-disk size (and 8x compression ratio) for `--native-int4` outputs by reading `storage_bytes` from `raw_data.len()`.
+- `QdqWeightInput` now derives `Clone` (required by the `quantize_model` -> `QuantizedWeightOutput` pipeline).
+
+### Removed
+
+- `sample_from_activation_stats` and `extract_channel` (dead after the histogram-direct rewrite).
+
 ## [0.7.0] - 2026-03-28
 
 ### Fixed

@@ -14,7 +14,7 @@ use std::fs;
 use std::io::{Read, Write};
 
 // Re-export so callers don't have to reach into submodules
-pub use graph_builder::ConnectivityReport;
+pub use graph_builder::{ConnectivityReport, SaveOptions};
 
 // ===========================================================================
 // Core types
@@ -66,12 +66,38 @@ pub struct QuantizedWeightInfo {
     pub name: String,
     /// Quantization bit width (4 or 8).
     pub bits: u8,
-    /// Quantization scale factor.
-    pub scale: f32,
-    /// Quantization zero point.
-    pub zero_point: i8,
+    /// Quantization scales.  `len() == 1` for per-tensor quantization;
+    /// `len() == num_channels` for per-channel.
+    pub scales: Vec<f32>,
+    /// Quantization zero points.  Same length as [`scales`](Self::scales).
+    pub zero_points: Vec<i8>,
     /// Number of elements in the quantized tensor.
     pub original_length: usize,
+    /// Actual on-disk byte count of the quantized initializer's `raw_data`.
+    /// For INT8 storage this equals `original_length`; for native INT4
+    /// (opset 21) it is `ceil(original_length / 2)`.
+    pub storage_bytes: usize,
+}
+
+impl QuantizedWeightInfo {
+    /// `true` if the weight was quantized per-channel (more than one scale).
+    pub fn is_per_channel(&self) -> bool {
+        self.scales.len() > 1
+    }
+
+    /// Per-tensor convenience accessor: returns the first scale.  Panics if empty.
+    ///
+    /// For per-channel tensors, iterate over [`scales`](Self::scales) instead.
+    pub fn scale(&self) -> f32 {
+        self.scales[0]
+    }
+
+    /// Per-tensor convenience accessor: returns the first zero-point.  Panics if empty.
+    ///
+    /// For per-channel tensors, iterate over [`zero_points`](Self::zero_points) instead.
+    pub fn zero_point(&self) -> i8 {
+        self.zero_points[0]
+    }
 }
 
 // ===========================================================================
@@ -80,6 +106,10 @@ pub struct QuantizedWeightInfo {
 
 impl OnnxModel {
     /// Load an ONNX model from a file path.
+    ///
+    /// Reads the entire file into a `Vec<u8>` before decoding.  For
+    /// multi-gigabyte models consider [`load_mmap`](Self::load_mmap)
+    /// (requires the `mmap` feature) to avoid the extra heap buffer.
     ///
     /// # Errors
     ///
@@ -122,6 +152,89 @@ impl OnnxModel {
             reason: format!("Failed to parse ONNX protobuf: {e}"),
         })?;
 
+        Ok(Self { proto })
+    }
+
+    /// Decode an ONNX model directly from a byte slice.
+    ///
+    /// Useful for in-memory or fuzzing scenarios where the source isn't a
+    /// filesystem path.  Same validation as [`load`](Self::load) but without
+    /// the file-size gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuantizeError::ModelLoad`] if `bytes` cannot be decoded as a
+    /// `ModelProto`.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let proto = ModelProto::decode(bytes).map_err(|e| QuantizeError::ModelLoad {
+            path: std::path::PathBuf::new(),
+            reason: format!("Failed to parse ONNX protobuf: {e}"),
+        })?;
+        Ok(Self { proto })
+    }
+
+    /// Load an ONNX model by memory-mapping the file (requires the `mmap`
+    /// feature).
+    ///
+    /// Compared to [`load`](Self::load), this avoids the intermediate
+    /// `Vec<u8>` buffer — useful for multi-gigabyte models where doubling
+    /// the working set during decode is a problem.  Peak RAM during load
+    /// falls from roughly `2 × file_size` to `1 × file_size + mmap overhead`.
+    ///
+    /// # Safety
+    ///
+    /// Memory-mapping requires that the file is not modified for the
+    /// duration of the load.  Another process truncating or rewriting the
+    /// file while decoding would be undefined behaviour.  This function
+    /// uses the `unsafe { Mmap::map(&file) }` call under the hood; its
+    /// invariants are the caller's responsibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QuantizeError::ModelLoad`] on I/O failure, invalid size,
+    /// or malformed protobuf.
+    #[cfg(feature = "mmap")]
+    pub fn load_mmap(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let file = fs::File::open(path).map_err(|e| QuantizeError::ModelLoad {
+            path: path.to_path_buf(),
+            reason: format!("Failed to open ONNX file: {e}"),
+        })?;
+
+        const MAX_MODEL_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10 GB
+        let file_size = file
+            .metadata()
+            .map_err(|e| QuantizeError::ModelLoad {
+                path: path.to_path_buf(),
+                reason: format!("Failed to read metadata: {e}"),
+            })?
+            .len();
+        if file_size > MAX_MODEL_SIZE {
+            return Err(QuantizeError::ModelLoad {
+                path: path.to_path_buf(),
+                reason: format!(
+                    "Model file too large: {:.2} GB (max: 10 GB)",
+                    file_size as f64 / (1024.0 * 1024.0 * 1024.0)
+                ),
+            });
+        }
+
+        // SAFETY: see method-level docs — caller guarantees the file is
+        // not modified while it is mapped.
+        let mmap = unsafe {
+            memmap2::Mmap::map(&file).map_err(|e| QuantizeError::ModelLoad {
+                path: path.to_path_buf(),
+                reason: format!("Failed to mmap ONNX file: {e}"),
+            })?
+        };
+
+        let proto = ModelProto::decode(&mmap[..]).map_err(|e| QuantizeError::ModelLoad {
+            path: path.to_path_buf(),
+            reason: format!("Failed to parse ONNX protobuf: {e}"),
+        })?;
+
+        // mmap is dropped here; `proto` owns all its data (prost copies
+        // bytes out of the source during decode), so this is sound.
         Ok(Self { proto })
     }
 
@@ -268,21 +381,44 @@ impl OnnxModel {
     ///
     /// ### INT4 storage note
     ///
-    /// `DequantizeLinear` requires INT8 input (opset < 21).  INT4-quantized values
-    /// ([-8, 7]) are stored as INT8 bytes.  Quantization *accuracy* is still
-    /// INT4-level; only the on-disk size is 4× instead of the 8× that bit-packing
-    /// would give.  True INT4 packing is a v0.4.0 target.
+    /// `DequantizeLinear` requires INT8 input in opsets &lt; 21.  By default,
+    /// INT4-quantized values ([-8, 7]) are widened to INT8 bytes — 4×
+    /// compression from FP32.  For true 8× compression, call
+    /// [`save_quantized_with_options`](Self::save_quantized_with_options) with
+    /// [`SaveOptions::with_native_int4(true)`], which emits native `INT4`
+    /// initializers and bumps the opset to 21.
     pub fn save_quantized(
         &mut self,
         quantized_data: &[graph_builder::QdqWeightInput],
         path: impl AsRef<std::path::Path>,
     ) -> Result<()> {
-        let path = path.as_ref();
-        use graph_builder::{apply_qdq_transform, ensure_opset_version};
+        self.save_quantized_with_options(quantized_data, path, SaveOptions::default())
+    }
 
-        // --- 1. Opset: ≥10 for per-tensor DequantizeLinear, ≥13 for per-channel ---
+    /// Save a quantized model with explicit [`SaveOptions`] control.
+    ///
+    /// See [`save_quantized`](Self::save_quantized) for the transform details.
+    /// Enabling [`SaveOptions::native_int4`] for INT4 weights bumps the
+    /// required opset to 21 automatically.
+    pub fn save_quantized_with_options(
+        &mut self,
+        quantized_data: &[graph_builder::QdqWeightInput],
+        path: impl AsRef<std::path::Path>,
+        options: SaveOptions,
+    ) -> Result<()> {
+        let path = path.as_ref();
+        use graph_builder::{apply_qdq_transform_with_options, ensure_opset_version};
+
+        // --- 1. Opset: ≥10 for per-tensor, ≥13 for per-channel, ≥21 for native INT4 ---
         let needs_per_channel = quantized_data.iter().any(|w| w.axis.is_some());
-        let min_opset = if needs_per_channel { 13 } else { 10 };
+        let uses_native_int4 = options.native_int4 && quantized_data.iter().any(|w| w.bits == 4);
+        let min_opset = if uses_native_int4 {
+            21
+        } else if needs_per_channel {
+            13
+        } else {
+            10
+        };
         ensure_opset_version(&mut self.proto, min_opset);
 
         // --- 2. Persist per-weight bits in model metadata ---
@@ -302,7 +438,7 @@ impl OnnxModel {
                 path: path.to_path_buf(),
                 reason: "Model has no graph".to_string(),
             })?;
-        apply_qdq_transform(graph, quantized_data)?;
+        apply_qdq_transform_with_options(graph, quantized_data, options)?;
 
         // --- 4. Encode and write to disk ---
         let mut buf = Vec::new();
@@ -364,47 +500,32 @@ impl OnnxModel {
     /// Looks for initializer triples:
     ///   `{base}_quantized`, `{base}_scale`, `{base}_zp`
     ///
-    /// Scale and zero-point values are read directly from the tensors.
-    /// Bit-width comes from `metadata_props` (written by `save_quantized`);
-    /// defaults to 8 if the metadata entry is missing.
+    /// Scale and zero-point are decoded in full — per-tensor yields a single
+    /// element; per-channel yields one entry per channel.  Bit-width comes
+    /// from `metadata_props` (written by `save_quantized`); defaults to 8 if
+    /// the metadata entry is missing.
+    ///
+    /// Native INT4 zero-point tensors (`DataType::Int4`) are unpacked from
+    /// their two-per-byte on-disk layout automatically.
     pub fn load_quantized_info(&self) -> Vec<QuantizedWeightInfo> {
         let graph = match &self.proto.graph {
             Some(g) => g,
             None => return Vec::new(),
         };
 
-        let mut scale_map: std::collections::HashMap<String, f32> =
+        let mut scale_map: std::collections::HashMap<String, Vec<f32>> =
             std::collections::HashMap::new();
-        let mut zp_map: std::collections::HashMap<String, i8> = std::collections::HashMap::new();
+        let mut zp_map: std::collections::HashMap<String, Vec<i8>> =
+            std::collections::HashMap::new();
         let mut quant_bases: Vec<String> = Vec::new();
 
         for init in &graph.initializer {
             let name = &init.name;
 
             if let Some(base) = name.strip_suffix("_scale") {
-                // Scale is stored in float_data (rank-0 scalar)
-                let scale = if !init.float_data.is_empty() {
-                    init.float_data[0]
-                } else if init.raw_data.len() >= 4 {
-                    // Fallback: try raw_data as little-endian f32
-                    f32::from_le_bytes([
-                        init.raw_data[0],
-                        init.raw_data[1],
-                        init.raw_data[2],
-                        init.raw_data[3],
-                    ])
-                } else {
-                    1.0
-                };
-                scale_map.insert(base.to_string(), scale);
+                scale_map.insert(base.to_string(), decode_scale_tensor(init));
             } else if let Some(base) = name.strip_suffix("_zp") {
-                // Zero-point is a single raw byte
-                let zp = if !init.raw_data.is_empty() {
-                    init.raw_data[0] as i8
-                } else {
-                    0
-                };
-                zp_map.insert(base.to_string(), zp);
+                zp_map.insert(base.to_string(), decode_zero_point_tensor(init));
             } else if let Some(base) = name.strip_suffix("_quantized") {
                 quant_bases.push(base.to_string());
             }
@@ -420,32 +541,107 @@ impl OnnxModel {
             }
         }
 
-        // Assemble QuantizedWeightInfo from the three maps
         quant_bases
             .iter()
             .map(|base| {
-                let scale = scale_map.get(base).copied().unwrap_or(1.0);
-                let zp = zp_map.get(base).copied().unwrap_or(0);
+                let scales = scale_map.get(base).cloned().unwrap_or_else(|| vec![1.0]);
+                let zero_points = zp_map.get(base).cloned().unwrap_or_else(|| vec![0]);
                 let bits = bits_map.get(base).copied().unwrap_or(8);
 
-                // Element count = product of dims on the _quantized tensor
-                let original_length = graph
+                // Element count = product of dims on the _quantized tensor;
+                // byte count = actual raw_data length (accounts for native INT4 packing).
+                let quant_init = graph
                     .initializer
                     .iter()
-                    .find(|i| i.name == format!("{}_quantized", base))
+                    .find(|i| i.name == format!("{}_quantized", base));
+                let original_length = quant_init
                     .map(|i| i.dims.iter().product::<i64>() as usize)
                     .unwrap_or(0);
+                let storage_bytes = quant_init.map(|i| i.raw_data.len()).unwrap_or(0);
 
                 QuantizedWeightInfo {
                     name: base.clone(),
                     bits,
-                    scale,
-                    zero_point: zp,
+                    scales,
+                    zero_points,
                     original_length,
+                    storage_bytes,
                 }
             })
             .collect()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for load_quantized_info
+// ---------------------------------------------------------------------------
+
+/// Expected element count for a 1-D or scalar tensor: rank-0 → 1, rank-1 → dims[0].
+fn expected_element_count(init: &crate::onnx_proto::TensorProto) -> usize {
+    if init.dims.is_empty() {
+        1
+    } else {
+        init.dims
+            .iter()
+            .copied()
+            .filter(|&d| d > 0)
+            .product::<i64>() as usize
+    }
+}
+
+fn decode_scale_tensor(init: &crate::onnx_proto::TensorProto) -> Vec<f32> {
+    let expected = expected_element_count(init).max(1);
+
+    if !init.float_data.is_empty() {
+        return init.float_data.clone();
+    }
+
+    if !init.raw_data.is_empty() && init.raw_data.len() >= 4 * expected {
+        return init
+            .raw_data
+            .chunks_exact(4)
+            .take(expected)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+    }
+
+    // Malformed or missing — fall back to a safe default so callers can still
+    // report the weight exists without a division-by-zero risk.
+    vec![1.0; expected]
+}
+
+fn decode_zero_point_tensor(init: &crate::onnx_proto::TensorProto) -> Vec<i8> {
+    use crate::onnx_proto::tensor_proto::DataType;
+    use crate::onnx_utils::quantization_nodes::unpack_int4_onnx;
+
+    let expected = expected_element_count(init).max(1);
+
+    // Native INT4: raw_data is packed two-per-byte, logical count in dims.
+    if init.data_type == DataType::Int4 as i32 {
+        return unpack_int4_onnx(&init.raw_data, expected);
+    }
+
+    // INT8 / widened INT4 / UINT8: raw_data is one byte per value.
+    if !init.raw_data.is_empty() {
+        return init
+            .raw_data
+            .iter()
+            .take(expected)
+            .map(|&b| b as i8)
+            .collect();
+    }
+
+    // int32_data carries int-type scalars when raw_data is absent.
+    if !init.int32_data.is_empty() {
+        return init
+            .int32_data
+            .iter()
+            .take(expected)
+            .map(|&v| v as i8)
+            .collect();
+    }
+
+    vec![0; expected]
 }
 
 // ===========================================================================

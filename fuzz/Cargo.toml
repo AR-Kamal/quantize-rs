@@ -1,0 +1,33 @@
+# Fuzzing harness for quantize-rs, using cargo-fuzz + libfuzzer.
+#
+# Run with:
+#   cargo install cargo-fuzz
+#   cargo fuzz run onnx_load
+#
+# This package deliberately stands outside the parent crate as a separate
+# workspace so cargo-fuzz's instrumentation doesn't affect regular builds.
+
+[package]
+name = "quantize-rs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.quantize-rs]
+path = ".."
+
+[[bin]]
+name = "onnx_load"
+path = "fuzz_targets/onnx_load.rs"
+test = false
+doc = false
+bench = false
