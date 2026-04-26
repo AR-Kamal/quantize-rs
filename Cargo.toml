@@ -13,6 +13,7 @@ keywords = ["quantization", "neural-network", "onnx", "ml", "optimization"]
 categories = ["command-line-utilities", "science", "compression"]
 exclude = ["*.onnx", "examples/*.onnx"]
 
+
 [dependencies]
 glob = "0.3"
 rand = "0.8"
