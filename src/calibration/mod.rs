@@ -89,7 +89,15 @@ impl CalibrationDataset {
         let num_samples = shape[0];
         let sample_size: usize = shape[1..].iter().product();
 
-        let data = array.into_raw_vec();
+        // `into_raw_vec` returns data in memory order, so the array must be
+        // C-contiguous for the per-sample slicing below to be correct.  Move the
+        // buffer out directly in the common (already-standard) case; only a
+        // Fortran-ordered `.npy` needs a re-layout copy.
+        let data = if array.is_standard_layout() {
+            array.into_raw_vec()
+        } else {
+            array.as_standard_layout().into_owned().into_raw_vec()
+        };
         let mut samples = Vec::with_capacity(num_samples);
 
         for i in 0..num_samples {
@@ -344,6 +352,41 @@ mod tests {
 
         let dataset = CalibrationDataset::from_samples(samples, vec![3]).unwrap();
         assert_eq!(dataset.len(), 2);
+    }
+
+    #[cfg(feature = "calibration")]
+    #[test]
+    fn test_from_numpy_fortran_order_slices_by_logical_samples() {
+        use ndarray::{Array2, ShapeBuilder};
+
+        // Logical content: 3 samples × 4 features.
+        //   sample 0 = [10, 11, 12, 13]
+        //   sample 1 = [20, 21, 22, 23]
+        //   sample 2 = [30, 31, 32, 33]
+        // Built in column-major (Fortran) memory so the on-disk `.npy` is
+        // fortran_order — the layout that used to mis-slice into transposed
+        // samples before from_numpy forced a standard layout.
+        let f_memory: Vec<f32> = vec![
+            10., 20., 30., // column 0
+            11., 21., 31., // column 1
+            12., 22., 32., // column 2
+            13., 23., 33., // column 3
+        ];
+        let arr = Array2::from_shape_vec((3, 4).f(), f_memory).unwrap();
+        assert!(
+            !arr.is_standard_layout(),
+            "test setup: array should be Fortran-ordered"
+        );
+
+        let tmp = tempfile::NamedTempFile::with_suffix(".npy").unwrap();
+        ndarray_npy::write_npy(tmp.path(), &arr).unwrap();
+
+        let dataset = CalibrationDataset::from_numpy(tmp.path()).unwrap();
+        assert_eq!(dataset.len(), 3);
+        assert_eq!(dataset.sample_shape(), &[4]);
+        assert_eq!(dataset.samples[0], vec![10., 11., 12., 13.]);
+        assert_eq!(dataset.samples[1], vec![20., 21., 22., 23.]);
+        assert_eq!(dataset.samples[2], vec![30., 31., 32., 33.]);
     }
 
     #[cfg(feature = "safetensors-input")]

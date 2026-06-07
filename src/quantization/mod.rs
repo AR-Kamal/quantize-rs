@@ -7,6 +7,11 @@
 use crate::errors::{QuantizeError, Result};
 
 /// Configuration for a quantization pass.
+///
+/// Fields are public for ergonomic construction in callers; new fields are
+/// added only on a minor version bump and downstream `..Default::default()`
+/// callers continue to compile.  Always construct via
+/// `QuantConfig { /* fields */, ..Default::default() }`.
 #[derive(Debug, Clone)]
 pub struct QuantConfig {
     /// Bit width: `4` for INT4 or `8` for INT8.
@@ -72,8 +77,8 @@ impl QuantConfig {
     /// Return `true` if the layer should be quantized.
     ///
     /// A layer is skipped when:
-    /// - its name appears in [`excluded_layers`], or
-    /// - `num_elements` is below [`min_elements`] (and `min_elements > 0`).
+    /// - its name appears in [`Self::excluded_layers`], or
+    /// - `num_elements` is below [`Self::min_elements`] (and `min_elements > 0`).
     pub fn should_quantize(&self, name: &str, num_elements: usize) -> bool {
         if self.excluded_layers.iter().any(|e| e == name) {
             return false;
@@ -86,8 +91,8 @@ impl QuantConfig {
 
     /// Return the effective bit width for a layer.
     ///
-    /// If the layer name has an entry in [`layer_bits`], that value is used;
-    /// otherwise the global [`bits`] is returned.
+    /// If the layer name has an entry in [`Self::layer_bits`], that value is used;
+    /// otherwise the global [`Self::bits`] is returned.
     pub fn bits_for_layer(&self, name: &str) -> u8 {
         self.layer_bits.get(name).copied().unwrap_or(self.bits)
     }
@@ -97,8 +102,20 @@ impl QuantConfig {
 // QuantRange trait and marker types
 // ---------------------------------------------------------------------------
 
+/// Seals [`QuantRange`] so only the in-crate `Int8Range` / `Int4Range` markers
+/// implement it.  Keeping the trait closed lets us add methods or constants to
+/// it in a future release without that being a breaking change downstream.
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Int8Range {}
+    impl Sealed for super::Int4Range {}
+}
+
 /// Marker trait that supplies the clamp constants for a quantization bit-width.
-pub trait QuantRange: Clone + std::fmt::Debug + Send + Sync + 'static {
+///
+/// **Sealed**: implemented only for [`Int8Range`] and [`Int4Range`] and cannot
+/// be implemented outside this crate.
+pub trait QuantRange: sealed::Sealed + Clone + std::fmt::Debug + Send + Sync + 'static {
     /// Minimum quantized value (inclusive).
     const QMIN: f32;
     /// Maximum quantized value (inclusive).
@@ -548,17 +565,20 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
                 if channel_params.is_empty() {
                     return data.iter().map(|&v| self.params.dequantize(v)).collect();
                 }
-                // Chunk the data by elements_per_channel and zip with channel params.
-                // This replaces a per-element division (`i / elements_per_channel`)
-                // with outer-loop iteration over contiguous channel slices.
+                // Walk contiguous per-channel slices.  The constructor
+                // guarantees `data.len()` is an exact multiple of the channel
+                // count, so `chunks_exact` consumes every element with no
+                // remainder and lines up one chunk per channel.
                 let elements_per_channel = data.len() / channel_params.len();
-                let mut out = Vec::with_capacity(data.len());
                 if elements_per_channel == 0 {
                     // Degenerate: fewer values than channels.  Fall back to the
-                    // representative params so we don't panic on the zip below.
+                    // representative params so we don't panic.
                     return data.iter().map(|&v| self.params.dequantize(v)).collect();
                 }
-                for (chunk, params) in data.chunks(elements_per_channel).zip(channel_params.iter())
+                let mut out = Vec::with_capacity(data.len());
+                for (chunk, params) in data
+                    .chunks_exact(elements_per_channel)
+                    .zip(channel_params.iter())
                 {
                     out.extend(chunk.iter().map(|&v| params.dequantize(v)));
                 }
@@ -709,7 +729,11 @@ pub fn unpack_int4(packed: &[u8], num_values: usize) -> Vec<i8> {
 // ---------------------------------------------------------------------------
 
 /// Type-erased wrapper over [`QuantizedTensor`] (INT8) and [`QuantizedTensorInt4`] (INT4).
+///
+/// Marked `#[non_exhaustive]` so future bit-widths (e.g. INT16, INT2) can be
+/// added without a breaking change.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum QuantizedTensorType {
     Int8(QuantizedTensor),
     Int4(QuantizedTensorInt4),
@@ -985,9 +1009,26 @@ impl Quantizer {
         &self,
         model: &crate::onnx_utils::OnnxModel,
     ) -> Result<Vec<QuantizedWeightOutput>> {
+        let weights = model.extract_weights();
+        self.quantize_weights(&weights)
+    }
+
+    /// Quantize a slice of already-extracted weights.
+    ///
+    /// Identical to [`quantize_model`](Self::quantize_model) but skips the
+    /// [`extract_weights`](crate::onnx_utils::OnnxModel::extract_weights) call.
+    /// Prefer this when the caller already holds the weights (e.g. to report the
+    /// pre-quantization count and size): extracting once and passing the slice
+    /// here avoids decoding every initializer's `raw_data` into `f32` twice.
+    ///
+    /// Skipped weights (per [`QuantConfig::should_quantize`]) do not appear in
+    /// the returned vector.
+    pub fn quantize_weights(
+        &self,
+        weights: &[crate::onnx_utils::WeightTensor],
+    ) -> Result<Vec<QuantizedWeightOutput>> {
         use rayon::prelude::*;
 
-        let weights = model.extract_weights();
         let to_quantize: Vec<_> = weights
             .iter()
             .filter(|w| self.config.should_quantize(&w.name, w.num_elements()))
@@ -1048,7 +1089,11 @@ impl Quantizer {
 /// [`OnnxModel::save_quantized_with_options`](crate::onnx_utils::OnnxModel::save_quantized_with_options)
 /// with the two telemetry values callers typically want to print: on-disk
 /// size and round-trip MSE.
+///
+/// Marked `#[non_exhaustive]` so future telemetry fields can be added
+/// without a breaking change.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct QuantizedWeightOutput {
     /// QDQ block for `save_quantized_with_options`.
     pub qdq: crate::onnx_utils::graph_builder::QdqWeightInput,
@@ -1186,13 +1231,9 @@ mod tests {
 
     #[test]
     fn test_per_channel_quantization() {
-        let mut data = vec![];
-        for _ in 0..100 {
-            data.push(0.5); // Channel 0
-        }
-        for _ in 0..100 {
-            data.push(5.0); // Channel 1
-        }
+        let mut data: Vec<f32> = Vec::with_capacity(200);
+        data.extend(std::iter::repeat_n(0.5_f32, 100)); // Channel 0
+        data.extend(std::iter::repeat_n(5.0_f32, 100)); // Channel 1
 
         let shape = vec![2, 100];
 
@@ -1216,15 +1257,9 @@ mod tests {
 
     #[test]
     fn test_per_channel_vs_per_tensor() {
-        let mut data = vec![];
-
-        for _ in 0..1000 {
-            data.push(0.01);
-        }
-
-        for _ in 0..1000 {
-            data.push(10.0);
-        }
+        let mut data: Vec<f32> = Vec::with_capacity(2000);
+        data.extend(std::iter::repeat_n(0.01_f32, 1000));
+        data.extend(std::iter::repeat_n(10.0_f32, 1000));
 
         let shape = vec![2, 1000];
 
@@ -1285,7 +1320,7 @@ mod tests {
         assert!(params.quantize(10.0) <= 7);
 
         let zero_quant = params.quantize(0.0);
-        assert!(zero_quant >= -8 && zero_quant <= 7);
+        assert!((-8..=7).contains(&zero_quant));
 
         for &original in &[-1.0, -0.5, 0.0, 0.5, 1.0] {
             let quantized = params.quantize(original);
@@ -1317,7 +1352,7 @@ mod tests {
 
     #[test]
     fn test_int4_vs_int8_error() {
-        let data = vec![-1.0, -0.5, 0.0, 0.5, 1.0];
+        let data = [-1.0, -0.5, 0.0, 0.5, 1.0];
 
         let params_int8 = QuantParams::from_range(-1.0, 1.0);
         let error_int8: f32 = data
@@ -1368,7 +1403,7 @@ mod tests {
         for i in -8..=7 {
             let value = i as f32 * params.scale;
             let quantized = params.quantize(value);
-            assert!(quantized >= -8 && quantized <= 7);
+            assert!((-8..=7).contains(&quantized));
         }
     }
 
@@ -1400,7 +1435,7 @@ mod tests {
         assert_eq!(quantized.packed_size_bytes(), 3);
 
         for &val in &quantized.data {
-            assert!(val >= -8 && val <= 7, "Value {} out of INT4 range", val);
+            assert!((-8..=7).contains(&val), "Value {} out of INT4 range", val);
         }
     }
 
@@ -1528,7 +1563,7 @@ mod tests {
 
             for &val in &quantized.data {
                 assert!(
-                    val >= -8 && val <= 7,
+                    (-8..=7).contains(&val),
                     "Value {} out of range for {}",
                     val,
                     desc
@@ -1576,7 +1611,7 @@ mod tests {
         println!("  Unpacked: {:?}", unpacked);
 
         assert_eq!(values, unpacked);
-        assert_eq!(packed.len(), (values.len() + 1) / 2);
+        assert_eq!(packed.len(), values.len().div_ceil(2));
     }
 
     #[test]
@@ -1591,7 +1626,7 @@ mod tests {
         println!("  Unpacked: {:?}", unpacked);
 
         assert_eq!(values, unpacked);
-        assert_eq!(packed.len(), (values.len() + 1) / 2);
+        assert_eq!(packed.len(), values.len().div_ceil(2));
     }
 
     #[test]

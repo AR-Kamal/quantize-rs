@@ -279,10 +279,13 @@ fn fmt_count(n: usize) -> String {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    // Count and slice by characters, not bytes, so a multi-byte string can't
+    // panic on a non-char-boundary slice.
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", &s[..max - 1])
+        let head: String = s.chars().take(max - 1).collect();
+        format!("{head}…")
     }
 }
 

@@ -52,7 +52,10 @@ test.py
 !examples/config.yaml
 
 
-ARCHITECTURE.md
+# ARCHITECTURE.md
 RELEASING.md
 ROADMAP.md
 PYTHON_BUILD_INSTRUCTIONS.md 
+RELEASE_v0.9_TODO.md
+
+test_edge_case*

@@ -7,6 +7,31 @@ mod cli;
 
 use cli::commands;
 
+/// Minimal stderr logger for the CLI.  Library code emits warnings through the
+/// `log` facade (so library / Python embedders can route or suppress them); the
+/// binary installs this so those warnings still reach the terminal as
+/// `warning: …` / `error: …` lines, matching the previous behaviour.
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            let label = if record.level() == log::Level::Error {
+                "error"
+            } else {
+                "warning"
+            };
+            eprintln!("{label}: {}", record.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
+static LOGGER: StderrLogger = StderrLogger;
+
 fn parse_bits(s: &str) -> Result<u8, String> {
     let bits: u8 = s
         .parse()
@@ -18,16 +43,20 @@ fn parse_bits(s: &str) -> Result<u8, String> {
     }
 }
 
-/// Validate calibration method at parse time.
+/// Validate the calibration method at parse time.
+///
+/// Delegates to the library's [`CalibrationMethod`] parser so the CLI accepts
+/// exactly what the calibration pipeline does — including the documented
+/// `percentile:NN` form (e.g. `percentile:95`) — and the two can never drift
+/// apart.  The original string is passed through on success; `commands::calibrate`
+/// re-parses it into a `CalibrationMethod`.
 #[cfg(feature = "calibration")]
 fn parse_calibration_method(s: &str) -> Result<String, String> {
-    match s.to_lowercase().as_str() {
-        "minmax" | "percentile" | "entropy" | "mse" => Ok(s.to_string()),
-        _ => Err(format!(
-            "unknown method '{}'; valid: minmax, percentile, entropy, mse",
-            s
-        )),
-    }
+    use quantize_rs::calibration::methods::CalibrationMethod;
+    use std::str::FromStr;
+    CalibrationMethod::from_str(s)
+        .map(|_| s.to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// Parse the `--format` flag value.  Case-insensitive accepts `human` or `json`.
@@ -55,12 +84,34 @@ fn parse_layer_bits(s: &str) -> Result<(String, u8), String> {
     Ok((name.to_string(), bits))
 }
 
+/// Collect `--layer-bits NAME=BITS` pairs into a map, warning on stderr when the
+/// same layer is given conflicting bit widths (the last value wins).
+fn collect_layer_bits(pairs: Vec<(String, u8)>) -> HashMap<String, u8> {
+    let mut map = HashMap::new();
+    for (name, bits) in pairs {
+        if let Some(prev) = map.insert(name.clone(), bits) {
+            if prev != bits {
+                log::warn!(
+                    "--layer-bits '{}' given more than once with different widths; \
+                     using {} (ignoring {})",
+                    name,
+                    bits,
+                    prev
+                );
+            }
+        }
+    }
+    map
+}
+
 #[derive(Parser)]
 #[command(
     name = "quantize-rs",
     version,
     about = "Neural network quantization toolkit",
-    long_about = "Convert ONNX models to INT8/INT4 for faster, smaller deployment"
+    long_about = "Convert ONNX models to INT8/INT4 weight-only QDQ to shrink model files 4-8x on disk. \
+                  Weights are quantized and activations stay FP32, so this reduces download/storage \
+                  size rather than guaranteeing faster inference."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -79,6 +130,12 @@ enum Commands {
         #[arg(short, long, default_value = "8", value_parser = parse_bits)]
         bits: u8,
 
+        /// Per-channel quantization (separate scale/zero-point per output
+        /// channel).  Always uses axis 0 (output-channel dim) — Conv and
+        /// MatMul weights are the intended target.  For Transformer linear
+        /// layers that expect axis=1 quantization, omit `--per-channel` or
+        /// implement axis=1 in a library call (not currently supported via
+        /// the CLI).
         #[arg(long)]
         per_channel: bool,
 
@@ -119,6 +176,12 @@ enum Commands {
         #[arg(short, long, default_value = "8", value_parser = parse_bits)]
         bits: u8,
 
+        /// Per-channel quantization (separate scale/zero-point per output
+        /// channel).  Always uses axis 0 (output-channel dim) — Conv and
+        /// MatMul weights are the intended target.  For Transformer linear
+        /// layers that expect axis=1 quantization, omit `--per-channel` or
+        /// implement axis=1 in a library call (not currently supported via
+        /// the CLI).
         #[arg(long)]
         per_channel: bool,
 
@@ -214,6 +277,12 @@ enum Commands {
         #[arg(short, long, default_value = "8", value_parser = parse_bits)]
         bits: u8,
 
+        /// Per-channel quantization (separate scale/zero-point per output
+        /// channel).  Always uses axis 0 (output-channel dim) — Conv and
+        /// MatMul weights are the intended target.  For Transformer linear
+        /// layers that expect axis=1 quantization, omit `--per-channel` or
+        /// implement axis=1 in a library call (not currently supported via
+        /// the CLI).
         #[arg(long)]
         per_channel: bool,
 
@@ -244,6 +313,10 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Route library `log` warnings to stderr (Err only if a logger is already
+    // installed, which won't happen for the CLI binary).
+    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Warn));
+
     let cli = Cli::parse();
 
     // Suppress the startup banner when a subcommand emits JSON so the caller
@@ -278,7 +351,7 @@ fn main() -> Result<()> {
             native_int4,
             symmetric,
         } => {
-            let layer_bits_map: HashMap<String, u8> = layer_bits.into_iter().collect();
+            let layer_bits_map = collect_layer_bits(layer_bits);
             commands::quantize(
                 &input,
                 &output,
@@ -305,7 +378,7 @@ fn main() -> Result<()> {
             symmetric,
             jobs,
         } => {
-            let layer_bits_map: HashMap<String, u8> = layer_bits.into_iter().collect();
+            let layer_bits_map = collect_layer_bits(layer_bits);
             commands::batch(
                 &inputs,
                 &output,
@@ -360,7 +433,7 @@ fn main() -> Result<()> {
             native_int4,
             symmetric,
         } => {
-            let layer_bits_map: HashMap<String, u8> = layer_bits.into_iter().collect();
+            let layer_bits_map = collect_layer_bits(layer_bits);
             commands::calibrate(
                 &input,
                 &data,
@@ -378,4 +451,53 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(all(test, feature = "calibration"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_calibration_method_accepts_percentile_nn() {
+        // Regression: the CLI validator used to reject the documented
+        // `percentile:NN` form even though the library parser (and the Python
+        // bindings) accept it.  See README.md `calibrate --method`.
+        assert_eq!(
+            parse_calibration_method("percentile:95").unwrap(),
+            "percentile:95"
+        );
+        assert_eq!(
+            parse_calibration_method("percentile:99.9").unwrap(),
+            "percentile:99.9"
+        );
+    }
+
+    #[test]
+    fn parse_calibration_method_accepts_bare_keywords() {
+        for m in ["minmax", "percentile", "entropy", "mse"] {
+            assert_eq!(parse_calibration_method(m).unwrap(), m);
+        }
+    }
+
+    #[test]
+    fn parse_calibration_method_rejects_unknown_and_out_of_range() {
+        // Unknown keyword.
+        assert!(parse_calibration_method("bogus").is_err());
+        // Percentile outside [0, 100] is rejected by the library parser, so
+        // the CLI rejects it too (no longer silently accepted or mislabeled).
+        assert!(parse_calibration_method("percentile:200").is_err());
+        assert!(parse_calibration_method("percentile:-1").is_err());
+    }
+
+    #[test]
+    fn collect_layer_bits_last_value_wins_on_conflict() {
+        let map = collect_layer_bits(vec![
+            ("a".to_string(), 4),
+            ("b".to_string(), 8),
+            ("a".to_string(), 8),
+        ]);
+        assert_eq!(map.get("a"), Some(&8), "last value should win");
+        assert_eq!(map.get("b"), Some(&8));
+        assert_eq!(map.len(), 2);
+    }
 }

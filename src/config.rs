@@ -111,6 +111,14 @@ pub struct BatchConfig {
     /// Continue processing remaining models after a failure.
     #[serde(default)]
     pub continue_on_error: bool,
+
+    /// Number of models to quantize in parallel.  Defaults to 1 (serial).
+    #[serde(default = "default_jobs")]
+    pub jobs: usize,
+}
+
+fn default_jobs() -> usize {
+    1
 }
 
 fn default_bits() -> u8 {

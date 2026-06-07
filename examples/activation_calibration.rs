@@ -70,31 +70,24 @@ fn main() -> Result<()> {
         let input_shape = if let Some(shape) = custom_shape {
             println!("  Using custom shape: {:?}", shape);
             shape
-        } else if !info.inputs.is_empty() {
-            // Parse shape from input info string (e.g., "input: float32[1,1,28,28]")
-            let input_str = &info.inputs[0];
-            if let Some(shape_part) = input_str.split('[').nth(1) {
-                if let Some(shape_str) = shape_part.split(']').next() {
-                    let dims: Vec<usize> = shape_str
-                        .split(',')
-                        .filter_map(|s| s.trim().parse().ok())
-                        .collect();
-
-                    // Skip batch dimension (first dim), use remaining dims
-                    if dims.len() >= 2 {
-                        let detected = dims[1..].to_vec();
-                        println!("  Auto-detected shape: {:?}", detected);
-                        detected
-                    } else {
-                        println!("  Could not parse shape, using ImageNet default");
-                        vec![3, 224, 224]
-                    }
-                } else {
-                    vec![3, 224, 224]
-                }
+        } else if let Some(detected) = model.input_shapes().into_iter().next().and_then(|dims| {
+            // Strip the batch slot (first dim) before filtering out symbolic /
+            // non-positive dims — same logic as the CLI `calibrate` path.  The
+            // model's input *shapes* come from the protobuf, not from parsing
+            // input name strings (which carry no shape).
+            let sample_dims: &[i64] = if dims.len() >= 2 { &dims[1..] } else { &dims };
+            let shape: Vec<usize> = sample_dims
+                .iter()
+                .filter_map(|&d| if d > 0 { Some(d as usize) } else { None })
+                .collect();
+            if shape.is_empty() {
+                None
             } else {
-                vec![3, 224, 224]
+                Some(shape)
             }
+        }) {
+            println!("  Auto-detected shape: {:?}", detected);
+            detected
         } else {
             println!("  Using ImageNet default shape");
             vec![3, 224, 224]

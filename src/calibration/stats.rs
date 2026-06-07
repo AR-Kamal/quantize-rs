@@ -98,6 +98,20 @@ impl ActivationStats {
             return;
         }
 
+        // A zero-count stats object (a `default()`, or one built from empty /
+        // all-NaN data) carries an *empty* histogram.  Merging into it is
+        // ill-defined and would index that empty histogram when the incoming
+        // range is degenerate — e.g. all-zero data keeps `min == max == 0`, so
+        // the range-expansion branch below never allocates the bins, and the
+        // "add new data into bins" loop then panics on `histogram_bins[0]`.
+        // Bootstrap from this batch instead: identical to constructing fresh,
+        // and every subsequent merge then has a full NUM_BINS histogram to add
+        // into.
+        if self.count == 0 {
+            *self = Self::from_data(data);
+            return;
+        }
+
         let data_min = finite.iter().copied().fold(f32::INFINITY, f32::min);
         let data_max = finite.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 
@@ -122,7 +136,9 @@ impl ActivationStats {
         let delta = data_mean - self.mean as f64;
         self.m2 = self.m2 + data_m2 + delta * delta * old_count * new_count / combined_count;
 
-        self.mean = ((self.mean as f64) * old_count + data_sum) as f32 / combined_count as f32;
+        // Do the divide in f64 before casting; the previous form cast to f32
+        // mid-expression and lost precision when old_count was large.
+        self.mean = (((self.mean as f64) * old_count + data_sum) / combined_count) as f32;
         self.count = combined_count as usize;
         self.std = (self.m2 / combined_count).sqrt() as f32;
 
@@ -283,127 +299,6 @@ fn rebin(
         let new_idx = ((center - new_min) / new_range * new_bin_count as f32).floor() as usize;
         let new_idx = new_idx.min(new_bin_count - 1);
         new_bins[new_idx] += count;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_activation_stats() {
-        let data = vec![-1.0, -0.5, 0.0, 0.5, 1.0];
-        let stats = ActivationStats::from_data(&data);
-
-        assert_eq!(stats.min(), -1.0);
-        assert_eq!(stats.max(), 1.0);
-        assert!((stats.mean() - 0.0).abs() < 0.01);
-
-        let p50 = stats.percentile(50.0);
-        assert!((p50 - 0.0).abs() < 0.3);
-    }
-
-    // -----------------------------------------------------------------------
-    // Histogram-direct range optimization
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_minmax_from_stats_matches_raw_data() {
-        let data: Vec<f32> = (0..1000).map(|i| (i as f32 - 500.0) / 500.0).collect();
-        let stats = ActivationStats::from_data(&data);
-
-        let from_stats = calculate_optimal_range_from_stats(&stats, CalibrationMethod::MinMax);
-        let from_raw = calculate_optimal_range(&data, CalibrationMethod::MinMax);
-
-        // MinMax path must be identical.
-        assert_eq!(from_stats.0, from_raw.0);
-        assert_eq!(from_stats.1, from_raw.1);
-    }
-
-    #[test]
-    fn test_percentile_from_stats_is_deterministic() {
-        // Same stats → same range, on every call.  The raw-data path used to
-        // regenerate samples with a thread-local RNG, making results unstable.
-        let data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 100.0).collect();
-        let stats = ActivationStats::from_data(&data);
-
-        let r1 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.9));
-        let r2 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.9));
-        let r3 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.9));
-
-        assert_eq!(r1, r2);
-        assert_eq!(r2, r3);
-    }
-
-    #[test]
-    fn test_mse_from_stats_is_deterministic() {
-        let data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 100.0).collect();
-        let stats = ActivationStats::from_data(&data);
-
-        let r1 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::MSE);
-        let r2 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::MSE);
-        assert_eq!(r1, r2);
-    }
-
-    #[test]
-    fn test_entropy_from_stats_is_deterministic() {
-        let data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 100.0).collect();
-        let stats = ActivationStats::from_data(&data);
-
-        let r1 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Entropy);
-        let r2 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Entropy);
-        assert_eq!(r1, r2);
-    }
-
-    #[test]
-    fn test_all_methods_produce_finite_ranges() {
-        // Regression guard: the histogram-direct optimizers must never
-        // produce NaN/Inf for any reasonable input, including skewed data.
-        let data: Vec<f32> = (0..200).map(|i| (i as f32 / 50.0) - 1.0).collect();
-        let stats = ActivationStats::from_data(&data);
-
-        for method in [
-            CalibrationMethod::MinMax,
-            CalibrationMethod::Percentile(99.9),
-            CalibrationMethod::Entropy,
-            CalibrationMethod::MSE,
-        ] {
-            let (lo, hi) = calculate_optimal_range_from_stats(&stats, method);
-            assert!(lo.is_finite(), "{:?}: lower bound not finite", method);
-            assert!(hi.is_finite(), "{:?}: upper bound not finite", method);
-            assert!(lo <= hi, "{:?}: lo ({}) > hi ({})", method, lo, hi);
-        }
-    }
-
-    #[test]
-    fn test_stats_based_matches_raw_based_on_bulk_data() {
-        // For a well-populated histogram, the stats-based and raw-based
-        // percentile paths should agree closely (histogram has 256 bins → the
-        // result is within one bin width).
-        let data: Vec<f32> = (0..1000).map(|i| (i as f32 - 500.0) / 100.0).collect();
-        let stats = ActivationStats::from_data(&data);
-
-        let from_stats =
-            calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.0));
-        let from_raw = calculate_optimal_range(&data, CalibrationMethod::Percentile(99.0));
-
-        let width = stats.max() - stats.min();
-        let bin_width = width / 256.0;
-        let tolerance = 3.0 * bin_width + 1e-4;
-        assert!(
-            (from_stats.0 - from_raw.0).abs() <= tolerance,
-            "lower percentile drift: stats={} raw={} tol={}",
-            from_stats.0,
-            from_raw.0,
-            tolerance
-        );
-        assert!(
-            (from_stats.1 - from_raw.1).abs() <= tolerance,
-            "upper percentile drift: stats={} raw={} tol={}",
-            from_stats.1,
-            from_raw.1,
-            tolerance
-        );
     }
 }
 
@@ -697,4 +592,168 @@ fn optimize_mse_from_stats(stats: &ActivationStats) -> (f32, f32) {
         }
     }
     best_range
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_activation_stats() {
+        let data = vec![-1.0, -0.5, 0.0, 0.5, 1.0];
+        let stats = ActivationStats::from_data(&data);
+
+        assert_eq!(stats.min(), -1.0);
+        assert_eq!(stats.max(), 1.0);
+        assert!((stats.mean() - 0.0).abs() < 0.01);
+
+        let p50 = stats.percentile(50.0);
+        assert!((p50 - 0.0).abs() < 0.3);
+    }
+
+    #[test]
+    fn test_update_on_default_stats_with_zero_data_does_not_panic() {
+        // Regression: a zero-count stats object has an empty histogram.  Updating
+        // it with all-zero data keeps the merged range at [0, 0], so the
+        // range-expansion branch is skipped — the old code then indexed the empty
+        // histogram and panicked.  The count==0 bootstrap guard fixes this.
+        let mut stats = ActivationStats::default();
+        stats.update(&[0.0, 0.0, 0.0]);
+        assert_eq!(stats.count(), 3);
+        assert_eq!(stats.min(), 0.0);
+        assert_eq!(stats.max(), 0.0);
+        // Percentile must still resolve on a degenerate range (returns the constant).
+        assert_eq!(stats.percentile(50.0), 0.0);
+    }
+
+    #[test]
+    fn test_update_after_empty_from_data_bootstraps() {
+        // from_data(&[]) yields a default (zero-count) stats; the first real
+        // update should behave exactly like constructing fresh from that batch.
+        let mut stats = ActivationStats::from_data(&[]);
+        assert_eq!(stats.count(), 0);
+        stats.update(&[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(stats.count(), 4);
+        assert_eq!(stats.min(), 1.0);
+        assert_eq!(stats.max(), 4.0);
+        // A second merge into the now-populated stats must extend, not replace.
+        stats.update(&[10.0]);
+        assert_eq!(stats.count(), 5);
+        assert_eq!(stats.max(), 10.0);
+    }
+
+    #[test]
+    fn test_update_after_all_nan_from_data_then_zero_data() {
+        // from_data(all-NaN) is also zero-count; a following all-zero update used
+        // to hit the same empty-histogram panic.
+        let mut stats = ActivationStats::from_data(&[f32::NAN, f32::NAN]);
+        assert_eq!(stats.count(), 0);
+        stats.update(&[0.0, 0.0]);
+        assert_eq!(stats.count(), 2);
+        assert_eq!(stats.min(), 0.0);
+        assert_eq!(stats.max(), 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Histogram-direct range optimization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_minmax_from_stats_matches_raw_data() {
+        let data: Vec<f32> = (0..1000).map(|i| (i as f32 - 500.0) / 500.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        let from_stats = calculate_optimal_range_from_stats(&stats, CalibrationMethod::MinMax);
+        let from_raw = calculate_optimal_range(&data, CalibrationMethod::MinMax);
+
+        // MinMax path must be identical.
+        assert_eq!(from_stats.0, from_raw.0);
+        assert_eq!(from_stats.1, from_raw.1);
+    }
+
+    #[test]
+    fn test_percentile_from_stats_is_deterministic() {
+        // Same stats → same range, on every call.  The raw-data path used to
+        // regenerate samples with a thread-local RNG, making results unstable.
+        let data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 100.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        let r1 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.9));
+        let r2 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.9));
+        let r3 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.9));
+
+        assert_eq!(r1, r2);
+        assert_eq!(r2, r3);
+    }
+
+    #[test]
+    fn test_mse_from_stats_is_deterministic() {
+        let data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 100.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        let r1 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::MSE);
+        let r2 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::MSE);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn test_entropy_from_stats_is_deterministic() {
+        let data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 100.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        let r1 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Entropy);
+        let r2 = calculate_optimal_range_from_stats(&stats, CalibrationMethod::Entropy);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn test_all_methods_produce_finite_ranges() {
+        // Regression guard: the histogram-direct optimizers must never
+        // produce NaN/Inf for any reasonable input, including skewed data.
+        let data: Vec<f32> = (0..200).map(|i| (i as f32 / 50.0) - 1.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        for method in [
+            CalibrationMethod::MinMax,
+            CalibrationMethod::Percentile(99.9),
+            CalibrationMethod::Entropy,
+            CalibrationMethod::MSE,
+        ] {
+            let (lo, hi) = calculate_optimal_range_from_stats(&stats, method);
+            assert!(lo.is_finite(), "{:?}: lower bound not finite", method);
+            assert!(hi.is_finite(), "{:?}: upper bound not finite", method);
+            assert!(lo <= hi, "{:?}: lo ({}) > hi ({})", method, lo, hi);
+        }
+    }
+
+    #[test]
+    fn test_stats_based_matches_raw_based_on_bulk_data() {
+        // For a well-populated histogram, the stats-based and raw-based
+        // percentile paths should agree closely (histogram has 256 bins → the
+        // result is within one bin width).
+        let data: Vec<f32> = (0..1000).map(|i| (i as f32 - 500.0) / 100.0).collect();
+        let stats = ActivationStats::from_data(&data);
+
+        let from_stats =
+            calculate_optimal_range_from_stats(&stats, CalibrationMethod::Percentile(99.0));
+        let from_raw = calculate_optimal_range(&data, CalibrationMethod::Percentile(99.0));
+
+        let width = stats.max() - stats.min();
+        let bin_width = width / 256.0;
+        let tolerance = 3.0 * bin_width + 1e-4;
+        assert!(
+            (from_stats.0 - from_raw.0).abs() <= tolerance,
+            "lower percentile drift: stats={} raw={} tol={}",
+            from_stats.0,
+            from_raw.0,
+            tolerance
+        );
+        assert!(
+            (from_stats.1 - from_raw.1).abs() <= tolerance,
+            "upper percentile drift: stats={} raw={} tol={}",
+            from_stats.1,
+            from_raw.1,
+            tolerance
+        );
+    }
 }

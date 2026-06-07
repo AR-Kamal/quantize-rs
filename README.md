@@ -61,8 +61,10 @@ cargo install quantize-rs
 
 ```toml
 [dependencies]
-quantize-rs = "0.8"
+quantize-rs = "0.9"
 ```
+
+Requires **Rust 1.88+** (MSRV).
 
 ## Quick start
 
@@ -199,7 +201,7 @@ Options:
       --per-channel               Per-channel quantization
       --symmetric                 Symmetric quantization (zero_point == 0)
       --native-int4               Store INT4 weights as ONNX DataType::Int4 (opset 21)
-      --method <METHOD>           minmax | percentile | entropy | mse [default: percentile]
+      --method <METHOD>           minmax | percentile | percentile:NN | entropy | mse [default: percentile]
       --exclude <LAYER>           Exclude a layer by name (repeatable)
       --min-elements <N>          Skip tensors with fewer than N elements
       --layer-bits <LAYER=BITS>   Per-layer bit-width override (repeatable)
@@ -230,7 +232,7 @@ Options:
 quantize-rs validate <ORIGINAL> <QUANTIZED> [--detailed] [--format human|json]
 ```
 
-Checks structure preservation, graph connectivity, weight shapes, and numerical sanity (all-zero detection, constant-value detection). With `--detailed`, prints per-layer error analysis. `--format json` emits a parseable report on stdout (banner suppressed).
+Checks structure preservation, graph connectivity, weight shapes, and numerical sanity (all-zero detection, constant-value detection). With `--detailed`, prints per-layer error analysis. `--format json` emits a parseable report on stdout (banner suppressed). **Exits non-zero when validation fails**, so it can gate a CI pipeline (the JSON report still carries `validation_passed`).
 
 ### benchmark
 
@@ -289,7 +291,7 @@ For INT8, the quantized range is [-128, 127]. For INT4, it is [-8, 7]. INT4 valu
 
 ### Symmetric vs asymmetric
 
-By default, quantization is asymmetric: `zero_point` is offset to fit the data range. Pass `--symmetric` to force `zero_point == 0` and use a balanced range `[-|max|, +|max|]`. Most ONNX Runtime / TensorRT INT8 matmul kernels require symmetric per-channel quantization for weights, so `--per-channel --symmetric` is the recommended combination when targeting accelerated INT8 inference.
+By default, quantization is asymmetric: `zero_point` is offset to fit the data range. Pass `--symmetric` to force `zero_point == 0` and use a balanced range `[-|max|, +|max|]`. Most ONNX Runtime / TensorRT INT8 matmul kernels require symmetric per-channel quantization for weights, so `--per-channel --symmetric` is the recommended weight configuration when targeting accelerated INT8 inference — which additionally requires quantizing activations, a downstream step quantize-rs does not perform (see [Known limitations](#known-limitations)).
 
 ### Per-channel quantization
 
@@ -332,10 +334,10 @@ output = session.run(None, {input_name: x})
 ## Testing
 
 ```bash
-# Rust tests (136 passing on default features: 95 unit + 24 integration + 17 property-based)
+# Rust tests (169 passing on default features: 109 unit + 4 bin + 39 integration + 17 property-based)
 cargo test
 
-# All optional features (adds mmap + safetensors-input integration tests, ~139 total)
+# All optional features (adds mmap + safetensors-input tests, 172 total)
 cargo test --all-features
 
 # With output
@@ -356,12 +358,17 @@ pytest test_python_bindings.py -v
 
 ## Known limitations
 
+- **Weight-only quantization (size, not guaranteed speed).** quantize-rs quantizes weights and inserts `DequantizeLinear`; it does **not** quantize activations. The benefit is a **smaller model file** (4--8x on disk / download). It does not by itself accelerate inference: runtimes such as ONNX Runtime typically constant-fold the weights back to FP32 at load, so compute and runtime memory stay FP32. True INT8-compute acceleration needs activation quantization, which is not yet supported.
+- **Weight selection is by rank, not op-aware.** Only rank-≥2 FP32 initializers are quantized. On CNNs this is exact -- the only non-weight initializers (biases, BatchNorm `scale`/`B`/`mean`/`var`) are 1-D and excluded. On other architectures a rank-≥2 FP32 constant that isn't a layer weight (e.g. a learned positional embedding, or a broadcast `Add`/`Mul` tensor) may be quantized, which can hurt accuracy; exclude it with `--exclude <name>` if needed.
 - **ONNX input only.** PyTorch and TensorFlow models must be exported to ONNX first.
 - **Vision models are the primary target.** Activation calibration is wired through `tract`, whose op coverage is centered on CNN architectures (Conv, MatMul, BatchNorm, ReLU, Pool, etc.). Transformer / LLM / RNN models with custom ops, dynamic shapes, KV-cache, or attention-mask plumbing may fail to load through tract or report unsupported ops during calibration. Weight-only quantization (`quantize` / `quantize_with_calibration` with no calibration data) does not use tract and works on any FP32 ONNX model.
 - **Image-shaped default sample.** When calibration data is not provided, random samples default to `[3, 224, 224]` (CHW image). For other input layouts pass `--shape` (CLI examples) or `sample_shape=...` (Python).
 - **Per-channel DequantizeLinear** writes 1-D scale/zero_point tensors with the `axis` attribute. ONNX Runtime supports this in opset >= 13.
 - **Native INT4 storage** requires an ONNX runtime with opset 21 support. Without `--native-int4`, INT4 values are widened to INT8 bytes on disk (still 4x model-size reduction relative to FP32).
+- **Per-tensor INT4 is not usable on depthwise-separable convolutions** (MobileNet-style). With only 16 levels and high per-channel weight variance, per-tensor INT4 weight-only quantization is near-random (MobileNetV2 INT4 ≈ 0.07 cosine vs FP32). Use `--per-channel` and calibration for INT4 on such models. INT8 works well (MobileNetV2 INT8 ≈ 0.98, per-channel ≈ 0.997).
 - **Single-input models** are assumed by the calibration path's auto shape detection. Multi-input graphs need an explicit `sample_shape` per input.
+- **External-data models are not supported.** quantize-rs reads only inline tensor data, so a model whose weights live in a sidecar `.onnx.data` file (common for exports above ~2 GB) is rejected with a clear error. Re-save with weights embedded first — `onnx.load(path, load_external_data=True)` then `onnx.save(model, out)` without external data.
+- **A few ONNX sections are not preserved on save.** The protobuf round-trip drops `ModelProto.functions` (local-function custom ops), `GraphProto.sparse_initializer`, and `training_info`; quantize-rs prints a stderr warning when a loaded model carried any of them. Models that rely on local functions in particular may be invalid after quantization — verify the output before deploying.
 
 ## Contributing
 

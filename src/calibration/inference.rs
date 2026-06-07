@@ -148,34 +148,55 @@ impl ActivationEstimator {
     ///   - Capture all intermediate tensors
     ///   - Update min/max/histogram for each layer
     ///
-    /// Progress is printed every 10 batches.
+    /// Progress is printed every 10 batches.  Library consumers who want
+    /// silent calibration (no `println!` on stdout) should call
+    /// [`calibrate_quiet`](Self::calibrate_quiet) instead.
     pub fn calibrate(&mut self, dataset: &CalibrationDataset) -> Result<()> {
+        self.calibrate_inner(dataset, /* quiet */ false)
+    }
+
+    /// Same as [`calibrate`](Self::calibrate) but emits no progress output.
+    ///
+    /// Useful for library consumers embedding quantize-rs in their own UI
+    /// (Python bindings, web services, batch pipelines that already report
+    /// progress at a higher level).
+    pub fn calibrate_quiet(&mut self, dataset: &CalibrationDataset) -> Result<()> {
+        self.calibrate_inner(dataset, /* quiet */ true)
+    }
+
+    fn calibrate_inner(&mut self, dataset: &CalibrationDataset, quiet: bool) -> Result<()> {
         if dataset.is_empty() {
             return Err(QuantizeError::Calibration {
                 reason: "Calibration dataset is empty".into(),
             });
         }
 
-        println!(
-            "Running activation-based calibration on {} samples...",
-            dataset.len()
-        );
+        if !quiet {
+            println!(
+                "Running activation-based calibration on {} samples...",
+                dataset.len()
+            );
+        }
 
         let num_samples = dataset.len();
 
         for (sample_idx, sample) in dataset.samples.iter().enumerate() {
             self.process_sample(sample, &dataset.shape)?;
 
-            // Progress every 10%
-            if (sample_idx + 1) % (num_samples / 10).max(1) == 0 || sample_idx == num_samples - 1 {
+            if !quiet
+                && ((sample_idx + 1) % (num_samples / 10).max(1) == 0
+                    || sample_idx == num_samples - 1)
+            {
                 println!("  Processed {}/{} samples", sample_idx + 1, num_samples);
             }
         }
 
-        println!(
-            "✓ Calibration complete: {} layers tracked",
-            self.layer_stats.len()
-        );
+        if !quiet {
+            println!(
+                "✓ Calibration complete: {} layers tracked",
+                self.layer_stats.len()
+            );
+        }
         Ok(())
     }
 
@@ -248,11 +269,6 @@ impl ActivationEstimator {
     /// expects `HashMap<String, ActivationStats>` (owned, not borrowed).
     pub fn into_layer_stats(self) -> HashMap<String, ActivationStats> {
         self.layer_stats
-    }
-
-    /// Get mutable reference to stats (for advanced use cases)
-    pub fn get_layer_stats_mut(&mut self) -> &mut HashMap<String, ActivationStats> {
-        &mut self.layer_stats
     }
 
     /// Consume the estimator and return the original OnnxModel.
@@ -413,7 +429,7 @@ mod tests {
         estimator.calibrate(&dataset).unwrap();
 
         let stats = estimator.get_layer_stats();
-        assert!(stats.len() > 0);
+        assert!(!stats.is_empty());
 
         // All stats should have count = 10 samples
         for (_name, stat) in stats.iter() {

@@ -1,7 +1,12 @@
 [package]
 name = "quantize-rs"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
+# Minimum supported Rust version. Our own code needs 1.87 (`<int>::is_multiple_of`);
+# the binding floor is 1.88, required by `time` — a build-dependency pulled in
+# transitively via the default `calibration` feature (tract-linalg → liquid → time).
+# Validated by clippy's `incompatible_msrv` lint under `-D warnings`.
+rust-version = "1.88"
 authors = ["Abdul Rahman Kamal <abdulrahmandev141@gmail.com>"]
 description = "Neural network quantization toolkit for ONNX models"
 license = "MIT"
@@ -11,7 +16,7 @@ documentation = "https://docs.rs/quantize-rs"
 readme = "README.md"
 keywords = ["quantization", "neural-network", "onnx", "ml", "optimization"]
 categories = ["command-line-utilities", "science", "compression"]
-exclude = ["*.onnx", "examples/*.onnx"]
+exclude = ["*.onnx", "examples/*.onnx", "quantize_rs.pyi", "py.typed"]
 
 
 [dependencies]
@@ -19,14 +24,22 @@ glob = "0.3"
 rand = "0.8"
 rayon = "1.8"
 
+# Logging facade — library warnings go through `log` so consumers can route or
+# suppress them (the CLI installs a stderr logger; Python uses pyo3-log).
+log = "0.4"
+
 # ONNX model parsing — prost-generated from proto/onnx.proto3
 prost = "0.13"
 
 # CLI interface
 clap = { version = "4.4", features = ["derive"] }
 
-# Python bindings
-pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+# Python bindings.  `abi3-py39` builds a single wheel compatible with Python
+# 3.9 and every newer release (3.10/3.11/3.12/3.13/…), so CI doesn't need a
+# matrix over interpreter versions.
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"], optional = true }
+# Bridges Rust `log` records into Python's `logging` for the Python bindings.
+pyo3-log = { version = "0.12", optional = true }
 
 # Error handling
 anyhow = "1.0"
@@ -52,7 +65,7 @@ safetensors = { version = "0.4", optional = true }
 [features]
 default = ["calibration"]
 calibration = ["tract-onnx", "tract-core", "ndarray", "ndarray-npy"]
-python = ["pyo3"]
+python = ["pyo3", "pyo3-log"]
 mmap = ["memmap2"]
 safetensors-input = ["safetensors"]
 
@@ -97,6 +110,7 @@ path = "examples/batch_quantize.rs"
 [[example]]
 name = "activation_calibration"
 path = "examples/activation_calibration.rs"
+required-features = ["calibration"]
 
 [[example]]
 name = "validate_real_model"

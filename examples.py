@@ -8,9 +8,9 @@ ONNX model quantization across different scenarios.
 Install:
     pip install quantization-rs
 
-Install Additional Package:
-    pip install onnxruntime Pillow
-    Note: other common package may neeed to be installed if you don't have it
+Install Additional Packages (for these examples):
+    pip install numpy onnxruntime Pillow
+    Note: other common packages may need to be installed if you don't have them
 
 Build from source:
     pip install maturin
@@ -31,6 +31,7 @@ def inspect_model(model_path: str):
     info = quantize_rs.model_info(model_path)
     print(f"Model:   {info.name}")
     print(f"Version: {info.version}")
+    print(f"Opset:   {info.opset_version}")
     print(f"Nodes:   {info.num_nodes}")
     print(f"Inputs:  {info.inputs}")
     print(f"Outputs: {info.outputs}")
@@ -54,9 +55,11 @@ def basic_int8(input_path: str, output_path: str):
 def basic_int4(input_path: str, output_path: str):
     """INT4 quantization for maximum compression.
 
-    ~8x file size reduction. Higher accuracy loss than INT8,
-    best suited for models where size matters more than precision
-    (e.g., mobile/edge deployment).
+    Higher accuracy loss than INT8, best suited for models where size
+    matters more than precision (e.g., mobile/edge deployment). By default
+    INT4 values are widened to one INT8 byte each (~4x vs FP32, opset-10
+    compatible); pass `native_int4=True` for true ~8x packed storage — see
+    the `native_int4` example below.
     """
     quantize_rs.quantize(input_path, output_path, bits=4)
     print(f"INT4 quantized: {output_path}")
@@ -72,6 +75,32 @@ def per_channel_int8(input_path: str, output_path: str):
     """
     quantize_rs.quantize(input_path, output_path, bits=8, per_channel=True)
     print(f"Per-channel INT8 quantized: {output_path}")
+
+
+def native_int4(input_path: str, output_path: str):
+    """INT4 with native ONNX storage (opset 21) for true 8x compression.
+
+    By default INT4 weights are widened to one INT8 byte each (~4x vs FP32,
+    opset-10 compatible). `native_int4=True` instead writes ONNX
+    `DataType::Int4`, packing two values per byte for true ~8x on-disk
+    compression. The opset is bumped to 21 automatically, so the model needs
+    an ONNX Runtime build with opset-21 support. No effect on INT8 weights.
+    """
+    quantize_rs.quantize(input_path, output_path, bits=4, native_int4=True)
+    print(f"Native INT4 quantized (opset 21, ~8x): {output_path}")
+
+
+def symmetric_int8(input_path: str, output_path: str):
+    """Symmetric per-channel INT8 (zero_point == 0).
+
+    `symmetric=True` forces every zero-point to 0 — the convention most ONNX
+    Runtime / TensorRT INT8 matmul kernels expect for per-channel weight
+    quantization, so it pairs naturally with `per_channel=True`.
+    """
+    quantize_rs.quantize(
+        input_path, output_path, bits=8, per_channel=True, symmetric=True
+    )
+    print(f"Symmetric per-channel INT8 quantized: {output_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +224,27 @@ def compare_calibration_methods(input_path: str, output_dir: str):
         print(f"  {method:12s} -> {size_mb:.2f} MB")
 
 
+def calibrate_with_explicit_shape(input_path: str, output_path: str):
+    """Random-sample calibration with an explicit input shape + custom percentile.
+
+    When the model's input shape can't be auto-detected (dynamic / symbolic
+    dims), pass `sample_shape` *without* the batch dimension. `method` accepts
+    `"percentile:NN"` to clip at the NN-th percentile instead of the default
+    99.9 — lower values clip more aggressively (more robust to outliers, but
+    can discard real signal). `symmetric` and `native_int4` work here too.
+    """
+    quantize_rs.quantize_with_calibration(
+        input_path,
+        output_path,
+        num_samples=50,
+        sample_shape=[3, 224, 224],   # e.g. ImageNet RGB; omit the batch dim
+        method="percentile:95",
+        per_channel=True,
+        symmetric=True,
+    )
+    print(f"Calibrated (shape=[3,224,224], percentile:95, symmetric): {output_path}")
+
+
 # ---------------------------------------------------------------------------
 # 5. Real-World Scenarios
 # ---------------------------------------------------------------------------
@@ -246,6 +296,7 @@ def scenario_edge_deployment(model_path: str, output_path: str):
         output_path,
         bits=4,
         per_channel=True,
+        native_int4=True,   # true ~8x: pack two INT4s per byte (opset 21)
     )
 
 
@@ -396,6 +447,7 @@ def full_pipeline(model_path: str, output_dir: str):
         "int8_perchannel": dict(bits=8, per_channel=True),
         "int4": dict(bits=4),
         "int4_perchannel": dict(bits=4, per_channel=True),
+        "int4_native": dict(bits=4, native_int4=True),  # true ~8x packed storage
     }
 
     print("=" * 60)
@@ -441,6 +493,7 @@ if __name__ == "__main__":
         epilog="""
 Examples:
   python examples.py --model resnet18.onnx
+  python examples.py --model resnet18.onnx --example native-int4
   python examples.py --model resnet18.onnx --example calibrate --data samples.npy
   python examples.py --model resnet18.onnx --example pipeline --output-dir results/
         """,
@@ -450,8 +503,9 @@ Examples:
         "--example",
         default="pipeline",
         choices=[
-            "inspect", "int8", "int4", "perchannel", "exclude",
-            "mixed", "calibrate", "compare", "verify", "pipeline",
+            "inspect", "int8", "int4", "native-int4", "perchannel",
+            "symmetric", "exclude", "mixed", "calibrate", "calibrate-shape",
+            "compare", "verify", "pipeline",
         ],
         help="Which example to run (default: pipeline)",
     )
@@ -472,6 +526,12 @@ Examples:
     elif args.example == "perchannel":
         per_channel_int8(args.model, args.output)
 
+    elif args.example == "native-int4":
+        native_int4(args.model, args.output)
+
+    elif args.example == "symmetric":
+        symmetric_int8(args.model, args.output)
+
     elif args.example == "exclude":
         exclude_sensitive_layers(args.model, args.output)
 
@@ -483,6 +543,9 @@ Examples:
             calibrate_with_real_data(args.model, args.output, args.data)
         else:
             calibrate_with_random_samples(args.model, args.output)
+
+    elif args.example == "calibrate-shape":
+        calibrate_with_explicit_shape(args.model, args.output)
 
     elif args.example == "compare":
         compare_calibration_methods(args.model, args.output_dir)

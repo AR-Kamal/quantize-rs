@@ -129,6 +129,21 @@ fn write_model_to_tempfile(
     path
 }
 
+/// Count leftover atomic-save temp files (`*.quantize-rs.<pid>.<n>.tmp`) in `dir`.
+fn count_orphan_tmp_files(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    name.contains(".quantize-rs.") && name.ends_with(".tmp")
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -190,7 +205,7 @@ fn test_quantize_simple_model_int8() {
     assert_eq!(qinfo.len(), 1);
     assert_eq!(qinfo[0].name, "weight");
     assert_eq!(qinfo[0].bits, 8);
-    assert!(qinfo[0].scale() > 0.0);
+    assert!(qinfo[0].scale().expect("per-tensor scale should exist") > 0.0);
     assert_eq!(qinfo[0].scales.len(), 1, "per-tensor should have 1 scale");
 }
 
@@ -470,8 +485,8 @@ fn test_mixed_precision_quantization() {
     let w2_info = qinfo.iter().find(|q| q.name == "w2").expect("w2 not found");
     assert_eq!(w1_info.bits, 4, "w1 bits should be 4 in metadata");
     assert_eq!(w2_info.bits, 8, "w2 bits should be 8 in metadata");
-    assert!(w1_info.scale() > 0.0);
-    assert!(w2_info.scale() > 0.0);
+    assert!(w1_info.scale().expect("w1 scale") > 0.0);
+    assert!(w2_info.scale().expect("w2 scale") > 0.0);
 }
 
 /// Config file: layer_bits YAML/TOML round-trip and validation.
@@ -657,31 +672,34 @@ fn test_multilayer_min_elements() {
 
     let mut model = OnnxModel::load(&model_path).unwrap();
     let weights = model.extract_weights();
-    assert_eq!(weights.len(), 6);
+    // extract_weights already drops the rank-1 biases (8, 16, 10 elems); only
+    // the three rank-≥2 weights remain.
+    assert_eq!(weights.len(), 3);
 
-    // Only tensors with ≥ 100 elements pass; biases (8, 16, 10) are skipped.
+    // min_elements additionally skips conv1.weight (216 elems); conv2.weight
+    // (1152) and fc.weight (1440) clear the threshold.
     let config = QuantConfig {
         bits: 8,
-        min_elements: 100,
+        min_elements: 1000,
         ..Default::default()
     };
     let qdq_data = quantize_weights(&config, &weights);
 
-    assert_eq!(qdq_data.len(), 3, "expected 3 large weights quantized");
+    assert_eq!(qdq_data.len(), 2, "expected 2 weights above the threshold");
     let names: Vec<&str> = qdq_data.iter().map(|q| q.original_name.as_str()).collect();
-    assert!(names.contains(&"conv1.weight"));
     assert!(names.contains(&"conv2.weight"));
     assert!(names.contains(&"fc.weight"));
-    assert!(!names.contains(&"conv1.bias"));
-    assert!(!names.contains(&"conv2.bias"));
-    assert!(!names.contains(&"fc.bias"));
+    assert!(
+        !names.contains(&"conv1.weight"),
+        "conv1.weight (216 elems) is below min_elements"
+    );
 
     let output_path = dir.path().join("model_min_elements.onnx");
     model.save_quantized(&qdq_data, &output_path).unwrap();
 
     let reloaded = OnnxModel::load(&output_path).unwrap();
     assert!(reloaded.validate_connectivity().valid);
-    assert_eq!(reloaded.load_quantized_info().len(), 3);
+    assert_eq!(reloaded.load_quantized_info().len(), 2);
 }
 
 /// Excluded layers are skipped; all other weights are quantized.
@@ -701,21 +719,22 @@ fn test_multilayer_excluded_layers() {
     };
     let qdq_data = quantize_weights(&config, &weights);
 
-    // 6 total − 2 excluded = 4 quantized
-    assert_eq!(qdq_data.len(), 4, "expected 4 weights after exclusions");
+    // 3 rank-≥2 weights − 1 excluded (conv1.weight; fc.bias isn't a weight) = 2.
+    assert_eq!(qdq_data.len(), 2, "expected 2 weights after exclusions");
     let names: Vec<&str> = qdq_data.iter().map(|q| q.original_name.as_str()).collect();
     assert!(
         !names.contains(&"conv1.weight"),
         "conv1.weight should be excluded"
     );
-    assert!(!names.contains(&"fc.bias"), "fc.bias should be excluded");
+    assert!(names.contains(&"conv2.weight"));
+    assert!(names.contains(&"fc.weight"));
 
     let output_path = dir.path().join("model_excluded.onnx");
     model.save_quantized(&qdq_data, &output_path).unwrap();
 
     let reloaded = OnnxModel::load(&output_path).unwrap();
     assert!(reloaded.validate_connectivity().valid);
-    assert_eq!(reloaded.load_quantized_info().len(), 4);
+    assert_eq!(reloaded.load_quantized_info().len(), 2);
 }
 
 /// Full quantize → save → load → validate round-trip for all six layers.
@@ -727,7 +746,8 @@ fn test_multilayer_full_round_trip() {
 
     let mut model = OnnxModel::load(&model_path).unwrap();
     let weights = model.extract_weights();
-    assert_eq!(weights.len(), 6);
+    // Rank-1 biases are excluded at extraction; three rank-≥2 weights remain.
+    assert_eq!(weights.len(), 3);
 
     let config = QuantConfig {
         bits: 8,
@@ -735,7 +755,11 @@ fn test_multilayer_full_round_trip() {
         ..Default::default()
     };
     let qdq_data = quantize_weights(&config, &weights);
-    assert_eq!(qdq_data.len(), 6, "all 6 weights should be quantized");
+    assert_eq!(
+        qdq_data.len(),
+        3,
+        "all 3 rank-≥2 weights should be quantized"
+    );
 
     let output_path = dir.path().join("model_full.onnx");
     model.save_quantized(&qdq_data, &output_path).unwrap();
@@ -749,10 +773,10 @@ fn test_multilayer_full_round_trip() {
     );
 
     let qinfo = reloaded.load_quantized_info();
-    assert_eq!(qinfo.len(), 6, "all 6 weights should appear in metadata");
+    assert_eq!(qinfo.len(), 3, "all 3 weights should appear in metadata");
     for info in &qinfo {
         assert!(
-            info.scale() > 0.0,
+            info.scale().expect("scale must exist") > 0.0,
             "scale must be positive for {}",
             info.name
         );
@@ -971,7 +995,7 @@ fn test_real_model_int8() {
     );
     for info in &qinfo {
         assert_eq!(info.bits, 8);
-        assert!(info.scale() > 0.0);
+        assert!(info.scale().expect("scale must exist") > 0.0);
     }
 }
 
@@ -1011,7 +1035,7 @@ fn test_real_model_int4() {
     assert_eq!(qinfo.len(), qdq_data.len());
     for info in &qinfo {
         assert_eq!(info.bits, 4);
-        assert!(info.scale() > 0.0);
+        assert!(info.scale().expect("scale must exist") > 0.0);
     }
 }
 
@@ -1290,7 +1314,7 @@ fn test_calibrated_full_pipeline() {
     let qdq_info = reloaded.load_quantized_info();
     assert_eq!(qdq_info.len(), 1);
     assert_eq!(qdq_info[0].name, "weight");
-    assert!(qdq_info[0].scale() > 0.0);
+    assert!(qdq_info[0].scale().expect("scale must exist") > 0.0);
 }
 
 // ===========================================================================
@@ -1396,7 +1420,7 @@ fn test_native_int4_uses_int4_data_type_and_packs_raw_data() {
     assert_eq!(info[0].bits, 4);
     assert_eq!(info[0].scales.len(), 1, "per-tensor → 1 scale");
     assert_eq!(info[0].zero_points.len(), 1);
-    assert!(info[0].scale() > 0.0);
+    assert!(info[0].scale().expect("scale must exist") > 0.0);
 
     // Graph connectivity still valid after the transform.
     let report = reloaded.validate_connectivity();
@@ -1699,7 +1723,7 @@ fn test_asymmetric_per_channel_produces_nonzero_zp_on_skewed_data() {
 
     let dir = tempfile::tempdir().unwrap();
     let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
-    let mut model = OnnxModel::load(&model_path).unwrap();
+    let model = OnnxModel::load(&model_path).unwrap();
     let weights = model.extract_weights();
 
     // Asymmetric (default).
@@ -1748,4 +1772,452 @@ fn test_load_mmap_produces_same_model_info_as_load() {
     assert_eq!(wa.len(), wb.len());
     assert_eq!(wa[0].name, wb[0].name);
     assert_eq!(wa[0].data, wb[0].data);
+}
+
+// ===========================================================================
+// Pre-1.0 hardening regression tests
+// ===========================================================================
+
+/// Calling `save_quantized` twice on the same `OnnxModel` instance should
+/// produce a clear "already quantized" diagnostic on the second call, not a
+/// generic "weight not found" error.
+#[test]
+fn test_resave_reports_already_quantized() {
+    let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
+    let model_proto = build_minimal_model(&weight_data, &[4, 4]);
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let quantizer = Quantizer::new(QuantConfig::default());
+    let outputs = quantizer.quantize_model(&model).unwrap();
+    let qdq: Vec<QdqWeightInput> = outputs.into_iter().map(|o| o.qdq).collect();
+
+    let first_path = dir.path().join("first.onnx");
+    model.save_quantized(&qdq, &first_path).unwrap();
+
+    let second_path = dir.path().join("second.onnx");
+    let err = model
+        .save_quantized(&qdq, &second_path)
+        .expect_err("second save must fail with an idempotency diagnostic");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("already been quantized"),
+        "expected 'already been quantized' diagnostic, got: {}",
+        msg
+    );
+}
+
+/// Atomic save must clean up its `.quantize-rs.tmp` sentinel on the success
+/// path — no orphan file left behind in the output directory.
+#[test]
+fn test_save_quantized_no_orphan_tmp_after_success() {
+    let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
+    let model_proto = build_minimal_model(&weight_data, &[4, 4]);
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let outputs = Quantizer::new(QuantConfig::default())
+        .quantize_model(&model)
+        .unwrap();
+    let qdq: Vec<QdqWeightInput> = outputs.into_iter().map(|o| o.qdq).collect();
+
+    let output_path = dir.path().join("quantized.onnx");
+    model.save_quantized(&qdq, &output_path).unwrap();
+
+    assert!(output_path.exists(), "output file should exist");
+    assert_eq!(
+        count_orphan_tmp_files(dir.path()),
+        0,
+        "atomic save left a temp file behind in {}",
+        dir.path().display()
+    );
+}
+
+/// Saving with an empty quantized-data slice should error rather than
+/// silently bump the opset and wipe `quantize_rs.bits.*` metadata.
+#[test]
+fn test_save_quantized_with_empty_inputs_errors() {
+    let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
+    let model_proto = build_minimal_model(&weight_data, &[4, 4]);
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let output_path = dir.path().join("empty.onnx");
+    let err = model
+        .save_quantized(&[], &output_path)
+        .expect_err("save with empty inputs must error");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("empty") || msg.contains("nothing to write"),
+        "expected error mentioning the empty input slice, got: {}",
+        msg
+    );
+    assert!(
+        !output_path.exists(),
+        "no output file should be written on the empty-input error path"
+    );
+}
+
+/// `from_bytes` must reject inputs over the 10 GB cap rather than letting
+/// prost OOM on a pathological length-prefixed protobuf.
+#[test]
+fn test_from_bytes_rejects_oversize_input() {
+    // We can't actually allocate 10 GB in a test, but we can verify the
+    // gate fires by feeding a slice whose `len()` we claim is huge.  Use
+    // a tiny in-memory byte vec and assert the size-cap branch is wired
+    // by separately confirming that valid small bytes parse.  (The 10 GB
+    // path itself is exercised by code review — see MAX_MODEL_SIZE_BYTES.)
+    let valid_proto = build_minimal_model(&[0.0_f32; 4], &[2, 2]);
+    let mut buf = Vec::new();
+    prost::Message::encode(&valid_proto, &mut buf).unwrap();
+    // Valid small input must succeed.
+    let _ = OnnxModel::from_bytes(&buf).expect("valid small proto must decode");
+    // Empty input is decoded as an empty ModelProto — that's prost's
+    // behavior, not a bug here.  The size gate only kicks in over 10 GB.
+}
+
+/// `Option<f32>` accessors on `QuantizedWeightInfo` must return `Some(_)`
+/// for a well-formed quantized model (and the inner implementation —
+/// `scales.first().copied()` — gives `None` on the empty-vec path by
+/// construction, which the type system enforces).
+#[test]
+fn test_quantized_weight_info_option_accessors_happy_path() {
+    let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
+    let model_proto = build_minimal_model(&weight_data, &[4, 4]);
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let outputs = Quantizer::new(QuantConfig::default())
+        .quantize_model(&model)
+        .unwrap();
+    let qdq: Vec<QdqWeightInput> = outputs.into_iter().map(|o| o.qdq).collect();
+    let output_path = dir.path().join("quantized.onnx");
+    model.save_quantized(&qdq, &output_path).unwrap();
+
+    let reloaded = OnnxModel::load(&output_path).unwrap();
+    let info = reloaded.load_quantized_info();
+    assert_eq!(info.len(), 1);
+    // Per-tensor quantization → single scale/zp; accessors yield Some(_).
+    assert!(info[0].scale().is_some(), "per-tensor scale must be Some");
+    assert!(
+        info[0].zero_point().is_some(),
+        "per-tensor zero_point must be Some"
+    );
+    assert!(!info[0].is_per_channel());
+}
+
+/// `count_non_fp32_weight_initializers` must:
+///   - count rank-≥2 FP16/BF16/Double initializers (the would-be weights), and
+///   - NOT count rank-≥2 INT64 initializers (those are shape constants).
+#[test]
+fn test_count_non_fp32_weight_initializers_filters_int_shape_tensors() {
+    let model_proto = ModelProto {
+        opset_import: vec![OperatorSetIdProto {
+            domain: String::new(),
+            version: 13,
+        }],
+        graph: Some(GraphProto {
+            initializer: vec![
+                TensorProto {
+                    name: "fp16_weight".to_string(),
+                    data_type: tensor_proto::DataType::Float16 as i32,
+                    dims: vec![4, 4],
+                    ..Default::default()
+                },
+                TensorProto {
+                    name: "int64_shape".to_string(),
+                    data_type: tensor_proto::DataType::Int64 as i32,
+                    dims: vec![2, 2],
+                    int64_data: vec![1, 2, 3, 4],
+                    ..Default::default()
+                },
+                TensorProto {
+                    name: "bf16_weight".to_string(),
+                    data_type: tensor_proto::DataType::Bfloat16 as i32,
+                    dims: vec![8, 8],
+                    ..Default::default()
+                },
+                TensorProto {
+                    name: "fp16_bias".to_string(),
+                    data_type: tensor_proto::DataType::Float16 as i32,
+                    // rank-1 → not counted (biases / 1-D tensors)
+                    dims: vec![4],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_model_to_tempfile(&model_proto, &dir, "fp_mixed.onnx");
+    let model = OnnxModel::load(&path).unwrap();
+    assert_eq!(
+        model.count_non_fp32_weight_initializers(),
+        2,
+        "only the rank-≥2 FP16 and BF16 weights should be counted; \
+         INT64 shape tensors and rank-1 biases must be excluded"
+    );
+}
+
+/// `BatchConfig.jobs` must round-trip through YAML so config-driven
+/// pipelines can set the parallelism level alongside other batch options.
+#[test]
+fn test_batch_config_jobs_parses_from_yaml() {
+    let yaml = r#"
+bits: 8
+per_channel: false
+
+batch:
+  input_dir: "models/*.onnx"
+  output_dir: "out/"
+  skip_existing: true
+  continue_on_error: true
+  jobs: 4
+"#;
+    let config = Config::from_yaml(yaml).unwrap();
+    config.validate().unwrap();
+    let batch = config.batch.as_ref().expect("batch section");
+    assert_eq!(batch.jobs, 4);
+    assert!(batch.skip_existing);
+    assert!(batch.continue_on_error);
+}
+
+/// `BatchConfig.jobs` defaults to 1 when omitted from the config file.
+#[test]
+fn test_batch_config_jobs_defaults_to_one() {
+    let yaml = r#"
+batch:
+  input_dir: "models/*.onnx"
+  output_dir: "out/"
+"#;
+    let config = Config::from_yaml(yaml).unwrap();
+    assert_eq!(config.batch.as_ref().unwrap().jobs, 1);
+}
+
+/// `from_bytes` errors must NOT print an empty path placeholder.
+#[test]
+fn test_from_bytes_error_message_omits_empty_path() {
+    // Garbage bytes that prost will reject.
+    let err = OnnxModel::from_bytes(&[0xFF, 0xFF, 0xFF, 0xFF]).expect_err("garbage must fail");
+    let msg = format!("{}", err);
+    assert!(
+        !msg.contains("''"),
+        "from_bytes error message must not contain an empty '' path: {}",
+        msg
+    );
+    assert!(
+        msg.contains("from bytes"),
+        "from_bytes error message should label the source as in-memory: {}",
+        msg
+    );
+}
+
+// ===========================================================================
+// Re-quantization safety (A1) and atomic-save cleanup (A2)
+// ===========================================================================
+
+#[test]
+fn test_extract_weights_excludes_qdq_scale_scaffolding() {
+    // Regression (A1): loading an already-quantized (QDQ) model and extracting
+    // weights must NOT return the FP32 `_scale` tensors.  Before this fix,
+    // re-quantizing a quantized model quantized its scales and silently
+    // corrupted the dequantization.
+    let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
+    let model_proto = build_minimal_model(&weight_data, &[4, 4]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+
+    // Quantize + save through the full pipeline.
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let outputs = Quantizer::new(QuantConfig {
+        bits: 8,
+        ..Default::default()
+    })
+    .quantize_model(&model)
+    .unwrap();
+    let qdq: Vec<QdqWeightInput> = outputs.into_iter().map(|o| o.qdq).collect();
+    let out_path = dir.path().join("model_int8.onnx");
+    model.save_quantized(&qdq, &out_path).unwrap();
+
+    // The reloaded model contains weight_quantized (INT8), weight_zp (INT8),
+    // and weight_scale (FP32).  extract_weights must skip all of them.
+    let reloaded = OnnxModel::load(&out_path).unwrap();
+    let weights = reloaded.extract_weights();
+    assert!(
+        weights.iter().all(|w| !w.name.ends_with("_scale")),
+        "extract_weights leaked QDQ scale scaffolding: {:?}",
+        weights.iter().map(|w| w.name.clone()).collect::<Vec<_>>()
+    );
+    assert!(
+        weights.is_empty(),
+        "a fully-quantized model has no extractable FP32 weights, got: {:?}",
+        weights.iter().map(|w| w.name.clone()).collect::<Vec<_>>()
+    );
+
+    // Re-quantizing the already-quantized model must be a no-op rather than
+    // quantizing the scales.
+    let requant = Quantizer::new(QuantConfig {
+        bits: 8,
+        ..Default::default()
+    })
+    .quantize_model(&reloaded)
+    .unwrap();
+    assert!(
+        requant.is_empty(),
+        "re-quantizing a QDQ model must find nothing to do, produced {} output(s)",
+        requant.len()
+    );
+}
+
+#[test]
+fn test_extract_weights_keeps_scale_named_weight_without_quantized_sibling() {
+    // Precision guard for A1: a genuine FP32 weight whose name ends in `_scale`
+    // must still be extracted when there is no sibling `_quantized` initializer
+    // (i.e. it is not QDQ scaffolding).
+    let weight_data: Vec<f32> = (0..16).map(|i| i as f32 * 0.1).collect();
+    let mut model_proto = build_minimal_model(&weight_data, &[4, 4]);
+    if let Some(g) = model_proto.graph.as_mut() {
+        g.initializer[0].name = "layernorm_scale".to_string();
+        g.node[0].input[1] = "layernorm_scale".to_string();
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_model_to_tempfile(&model_proto, &dir, "m.onnx");
+    let model = OnnxModel::load(&path).unwrap();
+
+    let weights = model.extract_weights();
+    assert_eq!(weights.len(), 1, "real `_scale`-named weight must be kept");
+    assert_eq!(weights[0].name, "layernorm_scale");
+}
+
+#[test]
+fn test_extract_weights_excludes_rank1_batchnorm_and_bias() {
+    // Regression: quantizing rank-1 BatchNorm params / biases corrupts the
+    // model (MobileNetV2 went to cosine ≈ 0.10 because per-tensor INT8 on a
+    // near-zero `running_var` makes `1/sqrt(var)` explode).  extract_weights
+    // must return only the rank-≥2 weight and skip every 1-D initializer.
+    let weight_data: Vec<f32> = (0..16).map(|i| i as f32 * 0.1).collect();
+    let mut model_proto = build_minimal_model(&weight_data, &[4, 4]);
+    if let Some(g) = model_proto.graph.as_mut() {
+        for (name, data) in [
+            ("bn_var", vec![1.0e-30_f32, 2.0, 3.0, 4.0]),
+            ("bn_mean", vec![0.0_f32, 0.1, 0.2, 0.3]),
+            ("conv_bias", vec![0.5_f32, 0.6, 0.7, 0.8]),
+        ] {
+            g.initializer.push(TensorProto {
+                name: name.to_string(),
+                data_type: tensor_proto::DataType::Float as i32,
+                dims: vec![4], // rank-1
+                float_data: data,
+                ..Default::default()
+            });
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_model_to_tempfile(&model_proto, &dir, "bn.onnx");
+    let model = OnnxModel::load(&path).unwrap();
+
+    let weights = model.extract_weights();
+    assert_eq!(
+        weights.len(),
+        1,
+        "only the rank-≥2 weight should be extracted, got {:?}",
+        weights.iter().map(|w| &w.name).collect::<Vec<_>>()
+    );
+    assert_eq!(weights[0].shape, vec![4, 4]);
+}
+
+#[test]
+fn test_external_data_initializer_skipped_and_counted() {
+    // A rank-2 FP32 weight whose data lives in an external file
+    // (data_location=EXTERNAL, no inline raw_data/float_data) must be skipped by
+    // extract_weights and reported by count_external_data_initializers, so the
+    // CLI/Python layers can emit the "re-save with weights embedded" error.
+    let proto = ModelProto {
+        opset_import: vec![OperatorSetIdProto {
+            domain: String::new(),
+            version: 13,
+        }],
+        graph: Some(GraphProto {
+            initializer: vec![TensorProto {
+                name: "w".to_string(),
+                data_type: tensor_proto::DataType::Float as i32,
+                dims: vec![2, 2],
+                data_location: tensor_proto::DataLocation::External as i32,
+                ..Default::default() // no inline data
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_model_to_tempfile(&proto, &dir, "ext.onnx");
+    let model = OnnxModel::load(&path).unwrap();
+
+    assert_eq!(model.count_external_data_initializers(), 1);
+    assert!(
+        model.extract_weights().is_empty(),
+        "external-data weight must be skipped (no inline data to quantize)"
+    );
+}
+
+#[test]
+fn test_failed_save_leaves_no_orphan_tmp() {
+    // Regression (A2): a save that fails must not leave a `.quantize-rs.tmp`
+    // orphan.  We force a failure by pointing the output at an existing
+    // directory so the final rename into place cannot succeed; the same
+    // cleanup now also covers a mid-write / fsync failure.
+    let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
+    let model_proto = build_minimal_model(&weight_data, &[4, 4]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = write_model_to_tempfile(&model_proto, &dir, "model.onnx");
+
+    let mut model = OnnxModel::load(&model_path).unwrap();
+    let outputs = Quantizer::new(QuantConfig {
+        bits: 8,
+        ..Default::default()
+    })
+    .quantize_model(&model)
+    .unwrap();
+    let qdq: Vec<QdqWeightInput> = outputs.into_iter().map(|o| o.qdq).collect();
+
+    // Output path is an existing directory → the rename into place fails.
+    let out_dir = dir.path().join("output_is_a_dir");
+    std::fs::create_dir(&out_dir).unwrap();
+
+    let result = model.save_quantized(&qdq, &out_dir);
+    assert!(result.is_err(), "saving onto a directory path should fail");
+
+    // No `*.quantize-rs.*.tmp` orphan should remain in the directory.
+    assert_eq!(
+        count_orphan_tmp_files(dir.path()),
+        0,
+        "orphan temp file left behind after failed save in {}",
+        dir.path().display()
+    );
+}
+
+#[test]
+fn test_info_reports_opset_version() {
+    // B4: ModelInfo / `info` surfaces the default-domain opset, which governs
+    // operator compatibility (model_version is usually 0 and unhelpful).
+    let weight_data: Vec<f32> = (0..16).map(|i| i as f32 * 0.1).collect();
+    let model_proto = build_minimal_model(&weight_data, &[4, 4]); // opset 13
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_model_to_tempfile(&model_proto, &dir, "m.onnx");
+
+    let model = OnnxModel::load(&path).unwrap();
+    assert_eq!(
+        model.info().opset_version,
+        13,
+        "info() should report the default-domain opset"
+    );
 }

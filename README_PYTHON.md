@@ -12,6 +12,9 @@ quantize-rs is designed and validated primarily for **computer-vision (CNN-style
 pip install quantization-rs
 ```
 
+Wheels are built with PyO3 `abi3-py39`, so a single wheel per OS/arch covers
+Python 3.9 through 3.13+.  No interpreter-specific wheels needed.
+
 Build from source (requires Rust toolchain and maturin):
 
 ```bash
@@ -32,7 +35,7 @@ Weight-based quantization. Loads the model, quantizes all weight tensors, and sa
 | `input_path` | str | required | Path to input ONNX model |
 | `output_path` | str | required | Path to save quantized model |
 | `bits` | int | 8 | Bit width: 4 or 8 |
-| `per_channel` | bool | False | Use per-channel quantization (separate scale/zp per output channel) |
+| `per_channel` | bool | False | Use per-channel quantization (separate scale/zp per output channel, axis 0 only — see Limitations) |
 | `excluded_layers` | list[str] or None | None | Initializer names to leave in FP32 |
 | `min_elements` | int | 0 | Skip tensors with fewer than N elements (e.g., biases) |
 | `layer_bits` | dict[str, int] or None | None | Per-layer bit-width overrides, e.g. `{"conv1.weight": 4}` |
@@ -96,7 +99,8 @@ Activation-based calibration quantization. Runs inference on calibration samples
 | Method | Description |
 |--------|-------------|
 | `"minmax"` | Uses observed min/max from activations |
-| `"percentile"` | Clips at 99.9th percentile to reduce outlier sensitivity |
+| `"percentile"` | Clips at the 99.9th percentile to reduce outlier sensitivity |
+| `"percentile:NN"` | Clips at the NNth percentile (e.g. `"percentile:95"`); must be in `[0, 100]` |
 | `"entropy"` | Selects range minimizing KL divergence between original and quantized distributions |
 | `"mse"` | Selects range minimizing mean squared error |
 
@@ -140,7 +144,8 @@ Returns metadata about an ONNX model.
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | str | Graph name |
-| `version` | int | Model version |
+| `version` | int | `model_version` field (often 0) |
+| `opset_version` | int | Default-domain opset version (governs operator compatibility) |
 | `num_nodes` | int | Number of computation nodes |
 | `inputs` | list[str] | Input tensor names |
 | `outputs` | list[str] | Output tensor names |
@@ -196,13 +201,29 @@ input_name = session.get_inputs()[0].name
 output = session.run(None, {input_name: your_input})
 ```
 
+## Logging
+
+quantize-rs routes its warnings (e.g. unpreserved ONNX sections, opset-migration caveats) through Rust's `log` crate, bridged into Python's standard `logging` under loggers named `quantize_rs.*`. Configure or silence them like any other logger:
+
+```python
+import logging
+logging.getLogger("quantize_rs").setLevel(logging.ERROR)  # silence quantize-rs warnings
+```
+
+Set your logging configuration **before the first quantize call** — the bridge caches logger levels, so changes made afterward may not take effect.
+
 ## Limitations
 
 - ONNX format only. Export PyTorch/TensorFlow models to ONNX before quantizing.
 - Validated primarily on CNN-style vision models. Activation calibration uses tract for inference; transformer / LLM / RNN architectures may report unsupported ops or shape mismatches in `quantize_with_calibration()`. The plain `quantize()` (weight-only) function does not use tract and works on any FP32 ONNX model.
 - Requires ONNX opset >= 10 for per-tensor quantization, >= 13 for per-channel (automatically upgraded if needed).
 - INT4 values are stored as INT8 bytes by default. Pass `native_int4=True` to write them as ONNX `DataType.Int4` (opset 21) for true 8x compression -- requires an ONNX runtime with opset-21 support.
+- **Per-channel always uses axis 0** (the output-channel dim, as expected by Conv and MatMul weights). Transformer-style linear layers that expect axis=1 per-channel quantization are not yet supported.
 - Single-input models are assumed by random-sample auto shape detection; for multi-input graphs, pass `sample_shape` explicitly or supply real `calibration_data`.
+- External-data models (weights in a sidecar `.onnx.data` file, common above ~2 GB) are not supported — `quantize()` raises with instructions to re-save with weights embedded.
+- A few ONNX sections are not preserved on save (`functions`/local custom ops, `sparse_initializer`, `training_info`); a warning is printed when a loaded model carried them.
+
+> Type stubs (`quantize_rs.pyi`) ship with the wheel, so editors, mypy, and pyright get completion and type checking for the API above.
 
 ## License
 

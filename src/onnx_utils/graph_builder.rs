@@ -23,7 +23,12 @@ use super::quantization_nodes::{
 // ===========================================================================
 
 /// One weight to convert: FP32 initializer → INT8 + DequantizeLinear block.
-#[derive(Debug, Clone)]
+///
+/// Fields are public for ergonomic construction in callers; new fields are
+/// added only on a minor version bump and downstream `..Default::default()`
+/// callers continue to compile.  Always construct via
+/// `QdqWeightInput { /* fields */, ..Default::default() }`.
+#[derive(Debug, Clone, Default)]
 pub struct QdqWeightInput {
     /// Original initializer name (e.g., `"conv1.weight"`)
     pub original_name: String,
@@ -44,7 +49,12 @@ pub struct QdqWeightInput {
 }
 
 /// Options controlling how a quantized model is written to disk.
+///
+/// Marked `#[non_exhaustive]` so future save options can be added without a
+/// breaking change.  Construct with [`SaveOptions::default()`] and the
+/// `.with_*()` builders.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct SaveOptions {
     /// Use native ONNX INT4 storage (opset 21, `DataType::Int4`) instead of
     /// widening INT4 values into INT8 bytes.
@@ -109,7 +119,7 @@ impl ConnectivityReport {
 ///
 /// This is the check ONNX Runtime performs on load — and the check that
 /// v0.2.0's `validate` command skipped, letting the rename bug through.
-pub fn validate_graph_connectivity(graph: &GraphProto) -> ConnectivityReport {
+pub(crate) fn validate_graph_connectivity(graph: &GraphProto) -> ConnectivityReport {
     let mut known: HashSet<String> = HashSet::new();
 
     // Seed: graph inputs + initializers are always available
@@ -161,7 +171,7 @@ pub fn validate_graph_connectivity(graph: &GraphProto) -> ConnectivityReport {
 /// upgrades deprecated op attributes:
 ///   - **opset 9**: `BatchNormalization.spatial` removed (was always 1)
 ///   - **opset 12**: `Dropout.ratio` migrated from attribute to input
-pub fn ensure_opset_version(model: &mut ModelProto, min_version: i64) {
+pub(crate) fn ensure_opset_version(model: &mut ModelProto, min_version: i64) {
     let old_version = get_opset_version(model);
 
     // Update or insert the default-domain opset entry
@@ -185,8 +195,26 @@ pub fn ensure_opset_version(model: &mut ModelProto, min_version: i64) {
     // Strip deprecated attributes when crossing breaking opset boundaries
     if old_version < min_version {
         if let Some(graph) = model.graph.as_mut() {
+            // Warn about ops we *can't* auto-migrate before rewriting the ones
+            // we can.  (`&mut graph` reborrows as `&graph` for the read.)
+            let unhandled = unhandled_opset_migrations(graph, old_version, min_version);
+            if !unhandled.is_empty() {
+                warn_unhandled_opset_migrations(old_version, min_version, &unhandled);
+            }
             upgrade_deprecated_ops(graph, old_version, min_version);
         }
+    }
+
+    // Keep `ir_version` consistent with the (possibly bumped) opset.  Native
+    // INT4 emits opset 21, whose `INT4`/`UINT4` tensor types require IR ≥ 10; a
+    // model that advertises opset 21 but an older IR is out of spec (current
+    // ONNX Runtime tolerates it, stricter/older/future ones may not).  Only ever
+    // raise — never lower an already-newer IR — and base it on the *effective*
+    // opset so a model already above `min_version` is still covered.
+    let effective_opset = old_version.max(min_version);
+    let min_ir = min_ir_version_for_opset(effective_opset);
+    if model.ir_version < min_ir {
+        model.ir_version = min_ir;
     }
 }
 
@@ -199,6 +227,94 @@ fn get_opset_version(model: &ModelProto) -> i64 {
         .map_or(0, |o| o.version)
 }
 
+/// Minimum ONNX IR version required to declare a given default-domain opset,
+/// per the ONNX spec's opset↔IR mapping (`docs/Versioning.md`).
+///
+/// This matters because bumping the opset alone is not enough: a model that
+/// advertises opset 21 (which is where the `INT4`/`UINT4` tensor types and
+/// native-INT4 `DequantizeLinear` were introduced) but keeps an older
+/// `ir_version` is out of spec.  Lenient runtimes (current ONNX Runtime)
+/// accept it, but stricter or future ones may not.  [`ensure_opset_version`]
+/// uses this to raise `ir_version` in lock-step with the opset it sets.
+fn min_ir_version_for_opset(opset: i64) -> i64 {
+    match opset {
+        ..=8 => 3,
+        9 => 4,
+        10 => 5,
+        11 => 6,
+        12..=14 => 7,
+        15..=18 => 8,
+        19..=20 => 9,
+        21..=22 => 10,
+        _ => 11, // opset 23+ → IR 11 (safe floor for anything newer)
+    }
+}
+
+/// Operators whose schema changed in a backward-incompatible way at the given
+/// opset (an attribute became an input, or the op was removed/renamed) and that
+/// [`upgrade_deprecated_ops`] does **not** rewrite.
+///
+/// When a save bumps the declared opset across one of these boundaries, the node
+/// keeps its old-opset form but the model now advertises the new opset — which
+/// ONNX Runtime may reject on load.  Auto-migrating them correctly needs ONNX's
+/// full version converter, so quantize-rs warns instead of silently emitting a
+/// model that might not load.
+///
+/// `BatchNormalization`, `Dropout`, `Softmax`, and `LogSoftmax` are intentionally
+/// absent — [`upgrade_deprecated_ops`] already handles those.
+const UNHANDLED_OPSET_MIGRATIONS: &[(&str, i64)] = &[
+    ("Upsample", 10),  // removed in opset 10 (replaced by Resize)
+    ("Slice", 10),     // starts/ends/axes/steps: attribute → input
+    ("TopK", 10),      // K: attribute → input
+    ("Resize", 11),    // roi/scales/sizes signature change
+    ("Pad", 11),       // pads/value: attribute → input
+    ("Clip", 11),      // min/max: attribute → input
+    ("Scatter", 11),   // deprecated → ScatterElements
+    ("Split", 13),     // split: attribute → input
+    ("Squeeze", 13),   // axes: attribute → input
+    ("Unsqueeze", 13), // axes: attribute → input
+    ("ReduceSum", 13), // axes: attribute → input
+];
+
+/// Operators present in `graph` whose unhandled migration boundary falls inside
+/// `(old_opset, new_opset]`.  Returns `(op_type, boundary_opset)` pairs, each op
+/// at most once.  Pure and testable; the user-facing warning is emitted by
+/// [`warn_unhandled_opset_migrations`].
+fn unhandled_opset_migrations(
+    graph: &GraphProto,
+    old_opset: i64,
+    new_opset: i64,
+) -> Vec<(&'static str, i64)> {
+    let mut hits: Vec<(&'static str, i64)> = Vec::new();
+    for &(op, boundary) in UNHANDLED_OPSET_MIGRATIONS {
+        if old_opset < boundary
+            && new_opset >= boundary
+            && graph.node.iter().any(|n| n.op_type == op)
+            && !hits.iter().any(|(o, _)| *o == op)
+        {
+            hits.push((op, boundary));
+        }
+    }
+    hits
+}
+
+/// Emit a single stderr warning describing operators that may break when the
+/// declared opset is bumped (see [`unhandled_opset_migrations`]).
+fn warn_unhandled_opset_migrations(old: i64, new: i64, hits: &[(&str, i64)]) {
+    let list = hits
+        .iter()
+        .map(|&(op, b)| format!("{op} (changed at opset {b})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    log::warn!(
+        "bumping the model opset from {old} to {new} to emit DequantizeLinear, but the graph \
+         contains operator(s) whose schema changed at an opset in that range and which \
+         quantize-rs does not rewrite: {list}.  The saved model will declare opset {new} while \
+         keeping the older node form, so ONNX Runtime may reject it.  If it does, run the model \
+         through onnx.version_converter (or re-export at opset {new}+) before quantizing."
+    );
+}
+
 /// Upgrade graph nodes whose attribute semantics changed between `old_opset`
 /// and `new_opset`.
 ///
@@ -208,7 +324,7 @@ fn get_opset_version(model: &ModelProto) -> i64 {
 fn upgrade_deprecated_ops(graph: &mut GraphProto, old_opset: i64, new_opset: i64) {
     let mut new_initializers: Vec<TensorProto> = Vec::new();
 
-    for node in graph.node.iter_mut() {
+    for (node_idx, node) in graph.node.iter_mut().enumerate() {
         // Opset 9: BatchNormalization removed the `spatial` attribute.
         // It was always 1 (the only valid value) and had no effect.
         if node.op_type == "BatchNormalization" && old_opset < 9 && new_opset >= 9 {
@@ -226,8 +342,11 @@ fn upgrade_deprecated_ops(graph: &mut GraphProto, old_opset: i64, new_opset: i64
                 .unwrap_or(0.5);
             node.attribute.retain(|a| a.name != "ratio");
 
+            // Include the node index so two Dropouts with the same
+            // (or empty) first output don't collide on the initializer name.
             let init_name = format!(
-                "_quantize_rs_dropout_ratio_{}",
+                "_quantize_rs_dropout_ratio_{}_{}",
+                node_idx,
                 node.output.first().map_or("", |s| s.as_str()),
             );
             new_initializers.push(TensorProto {
@@ -296,9 +415,10 @@ fn upgrade_deprecated_ops(graph: &mut GraphProto, old_opset: i64, new_opset: i64
 /// ONNX `DequantizeLinear` requires INT8 input in opsets < 21.  By default,
 /// INT4-quantized values (range [-8, 7]) are widened to INT8 here — 4×
 /// compression from FP32.  To get the full 8× compression, pass
-/// [`SaveOptions::with_native_int4(true)`] to [`apply_qdq_transform_with_options`];
+/// [`SaveOptions::with_native_int4`]`(true)` to [`apply_qdq_transform_with_options`];
 /// that emits native `DataType::Int4` (opset 21) with two values packed per byte.
-pub fn apply_qdq_transform(graph: &mut GraphProto, inputs: &[QdqWeightInput]) -> Result<()> {
+#[cfg(test)]
+pub(crate) fn apply_qdq_transform(graph: &mut GraphProto, inputs: &[QdqWeightInput]) -> Result<()> {
     apply_qdq_transform_with_options(graph, inputs, SaveOptions::default())
 }
 
@@ -306,7 +426,7 @@ pub fn apply_qdq_transform(graph: &mut GraphProto, inputs: &[QdqWeightInput]) ->
 ///
 /// Prefer this entry point for any new code; the short-form wrapper exists
 /// only for backward compatibility.
-pub fn apply_qdq_transform_with_options(
+pub(crate) fn apply_qdq_transform_with_options(
     graph: &mut GraphProto,
     inputs: &[QdqWeightInput],
     options: SaveOptions,
@@ -321,6 +441,38 @@ pub fn apply_qdq_transform_with_options(
         .collect();
 
     let quant_set: HashSet<&str> = inputs.iter().map(|i| i.original_name.as_str()).collect();
+
+    // -----------------------------------------------------------------------
+    // 0b.  Pre-flight: verify every requested weight still exists as an FP32
+    //      initializer.  Failing here keeps the graph in a consistent state
+    //      so the caller can retry; without this, a missing input would
+    //      surface only after some initializers were already removed.
+    //      Also catches the "already quantized — second save call" case
+    //      with a helpful diagnostic.
+    // -----------------------------------------------------------------------
+    for inp in inputs {
+        if !shape_map.contains_key(&inp.original_name) {
+            let already_quantized = shape_map
+                .keys()
+                .any(|n| n == &format!("{}_quantized", inp.original_name));
+            return Err(QuantizeError::GraphTransform {
+                reason: if already_quantized {
+                    format!(
+                        "Weight '{}' has already been quantized in this graph \
+                         (found '{}_quantized' initializer); apply_qdq_transform \
+                         is not idempotent — load a fresh OnnxModel before retrying",
+                        inp.original_name, inp.original_name
+                    )
+                } else {
+                    format!(
+                        "Weight '{}' not found in model initializers — \
+                         verify the name matches exactly",
+                        inp.original_name
+                    )
+                },
+            });
+        }
+    }
 
     // -----------------------------------------------------------------------
     // 1.  Remove the original FP32 initializers for every weight we're replacing
@@ -345,13 +497,18 @@ pub fn apply_qdq_transform_with_options(
     let mut dq_nodes = Vec::new();
 
     for inp in inputs {
+        // The pre-flight loop above already verified every original_name is
+        // present, and shape_map is not mutated in between — so this is
+        // unreachable in practice. Returning a clean error rather than
+        // panicking means a future refactor that breaks the invariant degrades
+        // to a recoverable `GraphTransform` error instead of a crash.
         let shape =
             shape_map
                 .get(&inp.original_name)
                 .ok_or_else(|| QuantizeError::GraphTransform {
                     reason: format!(
-                        "Weight '{}' not found in model initializers — \
-                         verify the name matches exactly",
+                        "internal invariant violated: weight '{}' missing from shape_map \
+                     after pre-flight validation",
                         inp.original_name
                     ),
                 })?;
@@ -983,5 +1140,95 @@ mod tests {
             .find(|o| o.domain.is_empty())
             .unwrap();
         assert_eq!(opset.version, 15);
+    }
+
+    #[test]
+    fn test_unhandled_opset_migration_detection() {
+        let slice_graph = GraphProto {
+            node: vec![NodeProto {
+                op_type: "Slice".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        // Crossing 9 → 13 passes the opset-10 Slice boundary → flagged.
+        assert_eq!(
+            unhandled_opset_migrations(&slice_graph, 9, 13),
+            vec![("Slice", 10)]
+        );
+
+        // Already at/above the boundary (11 → 13) → not flagged.
+        assert!(unhandled_opset_migrations(&slice_graph, 11, 13).is_empty());
+
+        // Not crossing far enough (8 → 9, boundary is 10) → not flagged.
+        assert!(unhandled_opset_migrations(&slice_graph, 8, 9).is_empty());
+
+        // Ops that `upgrade_deprecated_ops` handles are never reported.
+        let softmax_graph = GraphProto {
+            node: vec![NodeProto {
+                op_type: "Softmax".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(unhandled_opset_migrations(&softmax_graph, 7, 13).is_empty());
+
+        // Each affected op is reported once even with multiple boundaries crossed.
+        let multi = GraphProto {
+            node: vec![
+                NodeProto {
+                    op_type: "Pad".to_string(),
+                    ..Default::default()
+                },
+                NodeProto {
+                    op_type: "Unsqueeze".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let hits = unhandled_opset_migrations(&multi, 7, 21);
+        assert_eq!(hits.len(), 2);
+        assert!(hits.contains(&("Pad", 11)));
+        assert!(hits.contains(&("Unsqueeze", 13)));
+    }
+
+    #[test]
+    fn test_ensure_opset_bumps_ir_version_for_native_int4() {
+        // Native INT4 emits opset 21, whose INT4/UINT4 tensor types require
+        // IR >= 10.  Bumping the opset must drag ir_version along.
+        let mut model = ModelProto {
+            ir_version: 8,
+            opset_import: vec![OperatorSetIdProto {
+                domain: String::new(),
+                version: 13,
+            }],
+            graph: Some(GraphProto::default()),
+            ..Default::default()
+        };
+        ensure_opset_version(&mut model, 21);
+        assert_eq!(model.opset_import[0].version, 21);
+        assert!(
+            model.ir_version >= 10,
+            "ir_version must be raised to >= 10 for opset 21, got {}",
+            model.ir_version
+        );
+    }
+
+    #[test]
+    fn test_ensure_opset_never_lowers_ir_version() {
+        let mut model = ModelProto {
+            ir_version: 10,
+            opset_import: vec![OperatorSetIdProto {
+                domain: String::new(),
+                version: 17,
+            }],
+            graph: Some(GraphProto::default()),
+            ..Default::default()
+        };
+        // Requesting a lower opset must not touch the already-newer IR.
+        ensure_opset_version(&mut model, 13);
+        assert_eq!(model.ir_version, 10, "must not lower ir_version");
     }
 }

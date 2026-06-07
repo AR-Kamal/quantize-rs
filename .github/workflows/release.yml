@@ -9,19 +9,57 @@ permissions:
   contents: write
 
 jobs:
-  # ── 1. Publish Rust crate to crates.io ──
-  publish-crate:
+  # ── 0. Gate: version/tag consistency + full quality bar + crate packaging ──
+  # Every publish job depends (directly or transitively) on this, so a tagged
+  # release cannot reach crates.io OR PyPI without first passing the tag↔version
+  # check, tests, lints, docs, and a crate-packaging dry-run. This is what makes
+  # the pipeline all-or-nothing for everything detectable before upload.
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test
-      - run: cargo publish
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Tag matches Cargo.toml and pyproject.toml versions
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo_ver=$(grep -m1 '^version[[:space:]]*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          py_ver=$(grep -m1 '^version[[:space:]]*=' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag=$tag  Cargo.toml=$cargo_ver  pyproject.toml=$py_ver"
+          if [ -z "$tag" ] || [ -z "$cargo_ver" ] || [ -z "$py_ver" ]; then
+            echo "::error::could not parse a version (tag='$tag' cargo='$cargo_ver' pyproject='$py_ver')"
+            exit 1
+          fi
+          if [ "$tag" != "$cargo_ver" ]; then
+            echo "::error::git tag v$tag does not match Cargo.toml version $cargo_ver"
+            exit 1
+          fi
+          if [ "$tag" != "$py_ver" ]; then
+            echo "::error::git tag v$tag does not match pyproject.toml version $py_ver"
+            exit 1
+          fi
+          echo "OK: tag and both manifests agree on version $tag"
+      - name: Tests (all features)
+        run: cargo test --all-features --all
+      - name: Clippy (all features, all targets)
+        run: cargo clippy --all-features --all-targets -- -D warnings
+      - name: Check formatting
+        run: cargo fmt -- --check
+      - name: Build docs (deny warnings)
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --all-features
+      # Package + build the crate exactly as crates.io would, so packaging
+      # problems (excluded-but-referenced files, etc.) fail here — before any
+      # real publish — rather than after PyPI has already gone out.
+      - name: Crate packaging dry-run
+        run: cargo publish --dry-run
 
-  # ── 2. Build Python wheels on all platforms ──
+  # ── 1. Build Python wheels on all platforms (only after verify) ──
   build-wheels:
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -40,15 +78,18 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --features python --interpreter python3.12
+          # `pyo3/abi3-py39` is enabled in Cargo.toml so this builds a single
+          # ABI3 wheel compatible with Python 3.9 and every newer release.
+          args: --release --features python
           manylinux: ${{ matrix.manylinux || 'auto' }}
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.target }}
           path: target/wheels/*.whl
 
-  # ── 3. Build source distribution ──
+  # ── 2. Build source distribution (only after verify) ──
   build-sdist:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,9 +101,30 @@ jobs:
           name: sdist
           path: target/wheels/*.tar.gz
 
-  # ── 4. Publish all wheels + sdist to PyPI ──
-  publish-pypi:
+  # ── 3. Publish Rust crate to crates.io ──
+  # Gated on the full artifact set: the crate is not published unless every wheel
+  # and the sdist built, so a wheel-build failure can't leave a crates.io-only
+  # release. This is the first (and irreversible) publish — it acts as the commit
+  # point that PyPI then follows.
+  publish-crate:
     needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # ── 4. Publish all wheels + sdist to PyPI ──
+  # Runs only after the crate is published, so a crates.io failure can't leave a
+  # PyPI-only release. If THIS step fails, crates.io is published but PyPI isn't —
+  # the one remaining split, and a recoverable one: re-run this job (the crate is
+  # already out, so it is skipped).
+  publish-pypi:
+    needs: [build-wheels, build-sdist, publish-crate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -74,10 +136,11 @@ jobs:
           password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: dist/
 
-  # ── 5. Create GitHub release ──
+  # ── 5. Create GitHub release (only if BOTH registries published) ──
+  # No `always()`: this runs only when publish-crate AND publish-pypi both
+  # succeeded, so a GitHub release is never created for a half-published version.
   github-release:
     needs: [publish-crate, publish-pypi]
-    if: always() && needs.publish-pypi.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

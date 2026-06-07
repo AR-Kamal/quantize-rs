@@ -101,7 +101,11 @@ pub fn build_dequantize_linear_node(names: &DequantLinearNames, axis: Option<usi
 /// ONNX `DequantizeLinear` accepted only INT8 inputs before opset 21.  From
 /// opset 21 it also accepts native `INT4` (and `UINT4`), which is 2× smaller
 /// on disk.
+///
+/// Marked `#[non_exhaustive]` so future ONNX wire formats can be added
+/// without a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StorageFormat {
     /// INT4 values widened to INT8 bytes.  Compatible with opset 10+ — the
     /// default for backward compatibility, but gives only 4× compression.

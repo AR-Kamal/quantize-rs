@@ -1,9 +1,9 @@
 # Fuzzing quantize-rs
 
 Uses [cargo-fuzz](https://rust-fuzz.github.io/book/cargo-fuzz.html) to
-stress-test the ONNX protobuf decoder. `OnnxModel::load` accepts
-user-supplied `.onnx` files, so catching panics in the parse path is
-worth the minimal setup here.
+stress-test the ONNX protobuf decoder. The target feeds arbitrary bytes to
+`OnnxModel::from_bytes` (the in-memory variant of `load`), so catching panics
+in the parse path is worth the minimal setup here.
 
 ## One-time setup
 

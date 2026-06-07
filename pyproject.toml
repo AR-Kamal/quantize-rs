@@ -5,10 +5,12 @@ build-backend = "maturin"
  
 [project]
 name = "quantization-rs"
-version = "0.8.0"
+version = "0.9.0"
 description = "Neural network quantization toolkit for ONNX models"
 readme = "README_PYTHON.md"
-requires-python = ">=3.8"
+# Matches the abi3-py39 wheel tag (Cargo's pyo3 `abi3-py39`); a 3.8 interpreter
+# can't load the cp39-abi3 wheel anyway.
+requires-python = ">=3.9"
 license = { text = "MIT OR Apache-2.0" }
 keywords = ["quantization", "onnx", "neural-networks", "machine-learning"]
 classifiers = [
@@ -18,7 +20,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -45,3 +46,10 @@ Documentation = "https://github.com/AR-Kamal/quantize-rs#readme"
 [tool.maturin]
 features = ["python"]
 module-name = "quantize_rs"
+# Ship PEP 561 type information for the native module so editors / mypy / pyright
+# can type-check `import quantize_rs`.  Placed at the wheel root, next to the
+# compiled extension.
+include = [
+    { path = "quantize_rs.pyi", format = "wheel" },
+    { path = "py.typed", format = "wheel" },
+]

@@ -74,8 +74,32 @@ fn quantize_inner(
     let original_size: usize = weights.iter().map(|w| w.size_bytes()).sum();
 
     if weights.is_empty() {
-        p!("⚠  No weights found to quantize!");
-        return Ok(());
+        let external = model.count_external_data_initializers();
+        let non_fp32 = model.count_non_fp32_weight_initializers();
+        return Err(if external > 0 {
+            anyhow::anyhow!(
+                "no inline FP32 weight tensors found in '{}': {} initializer(s) store their \
+                 data in an external file (ONNX external-data format); quantize-rs reads only \
+                 inline tensors — re-save the model with weights embedded \
+                 (e.g. `onnx.load(path, load_external_data=True)` then \
+                 `onnx.save(model, out)` without external data) and retry",
+                input,
+                external
+            )
+        } else if non_fp32 > 0 {
+            anyhow::anyhow!(
+                "no FP32 weight tensors found in '{}', but the model has {} non-FP32 \
+                 weight-shaped initializer(s) (FP16, BF16, INT8, etc.); quantize-rs \
+                 currently supports only FP32 input — convert the model to FP32 first",
+                input,
+                non_fp32
+            )
+        } else {
+            anyhow::anyhow!(
+                "no weight tensors found in '{}' — model may be empty or already quantized",
+                input
+            )
+        });
     }
 
     p!("✓ Found {} weight tensors", weights.len());
@@ -119,7 +143,9 @@ fn quantize_inner(
     };
 
     // Shared helper: filter, parallel-quantize, honour per-layer overrides.
-    let outputs = Quantizer::new(config).quantize_model(&model)?;
+    // `weights` is already extracted above — reuse it instead of decoding every
+    // initializer's raw_data into f32 a second time inside quantize_model.
+    let outputs = Quantizer::new(config).quantize_weights(&weights)?;
 
     let skipped = weights.len() - outputs.len();
     if skipped > 0 {
@@ -129,12 +155,10 @@ fn quantize_inner(
         );
     }
     if outputs.is_empty() {
-        p!(
-            "{}",
-            "⚠  All weight tensors were excluded — no quantization performed.".yellow()
-        );
-        p!("  Check --exclude, --min-elements, and layer_bits settings.");
-        return Ok(());
+        return Err(anyhow::anyhow!(
+            "all {} weight tensor(s) were filtered out by --exclude / --min-elements / layer_bits; nothing to quantize",
+            weights.len()
+        ));
     }
 
     let total_error: f32 = outputs.iter().map(|o| o.mse).sum();
@@ -181,7 +205,19 @@ fn quantize_inner(
 
     p!("Validating saved model...");
     match OnnxModel::load(output) {
-        Ok(_) => p!("✓ Model validation passed"),
+        Ok(reloaded) => {
+            // Match `calibrate`: confirm the saved graph is still fully
+            // connected, not just that it re-parses.
+            let report = reloaded.validate_connectivity();
+            if report.valid {
+                p!("✓ Model validation passed");
+            } else {
+                p!(
+                    "⚠  Saved model has graph connectivity issues:\n{}",
+                    report.summary()
+                );
+            }
+        }
         Err(e) => p!("⚠  Warning: Could not validate saved model: {}", e),
     }
 
@@ -193,6 +229,7 @@ struct InfoReport<'a> {
     path: &'a str,
     name: String,
     version: i64,
+    opset_version: i64,
     num_nodes: usize,
     inputs: Vec<String>,
     outputs: Vec<String>,
@@ -207,6 +244,7 @@ pub fn info(input: &str, format: &str) -> Result<()> {
             path: input,
             name: info.name,
             version: info.version,
+            opset_version: info.opset_version,
             num_nodes: info.num_nodes,
             inputs: info.inputs,
             outputs: info.outputs,
@@ -219,6 +257,7 @@ pub fn info(input: &str, format: &str) -> Result<()> {
     println!();
     println!("  Name:       {}", info.name.cyan());
     println!("  Version:    {}", info.version);
+    println!("  Opset:      {}", info.opset_version);
     println!("  Nodes:      {}", info.num_nodes);
     println!();
 
@@ -497,17 +536,20 @@ pub fn calibrate(
             .into_iter()
             .next()
             .and_then(|dims| {
-                let shape: Vec<usize> = dims
-                    .into_iter()
-                    .filter_map(|d| if d > 0 { Some(d as usize) } else { None })
+                // Strip the batch slot (first dim) BEFORE filtering out
+                // symbolic / non-positive dims.  For a typical HuggingFace
+                // export the first dim is `dim_param` (symbolic batch) and
+                // surfaces as `-1`; filtering first would silently drop the
+                // batch and then strip the channel dim instead.
+                let sample_dims: &[i64] = if dims.len() >= 2 { &dims[1..] } else { &dims };
+                let shape: Vec<usize> = sample_dims
+                    .iter()
+                    .filter_map(|&d| if d > 0 { Some(d as usize) } else { None })
                     .collect();
-                // Skip batch dimension if present
-                if shape.len() >= 2 {
-                    Some(shape[1..].to_vec())
-                } else if !shape.is_empty() {
-                    Some(shape)
-                } else {
+                if shape.is_empty() {
                     None
+                } else {
+                    Some(shape)
                 }
             })
             .unwrap_or_else(|| vec![3, 224, 224]);
@@ -553,7 +595,8 @@ pub fn calibrate(
         layer_bits: layer_bits.clone(),
     };
 
-    let outputs = Quantizer::with_calibration(config, calib_stats).quantize_model(&model)?;
+    // Reuse the weights extracted above rather than re-decoding inside quantize_model.
+    let outputs = Quantizer::with_calibration(config, calib_stats).quantize_weights(&weights)?;
 
     let skipped = weights.len() - outputs.len();
     if skipped > 0 {
@@ -561,6 +604,14 @@ pub fn calibrate(
             "  Skipping {} layer(s) (excluded or below min-elements)",
             skipped
         );
+    }
+
+    if outputs.is_empty() {
+        return Err(anyhow::anyhow!(
+            "all {} weight tensor(s) were filtered out by --exclude / --min-elements / \
+             layer_bits; nothing to quantize",
+            weights.len()
+        ));
     }
 
     let total_error: f32 = outputs.iter().map(|o| o.mse).sum();
@@ -586,6 +637,24 @@ pub fn calibrate(
     println!("Saving calibrated model...");
     model.save_quantized_with_options(&quantized_data, output_path, save_options)?;
     println!("✓ Saved to: {}", output_path.green());
+
+    // Match `quantize`: reload the saved file to confirm it parses and
+    // surface graph-connectivity problems before the user moves on.
+    println!("Validating saved model...");
+    match OnnxModel::load(output_path) {
+        Ok(reloaded) => {
+            let report = reloaded.validate_connectivity();
+            if report.valid {
+                println!("✓ Model validation passed");
+            } else {
+                println!(
+                    "⚠  Saved model has graph connectivity issues:\n{}",
+                    report.summary()
+                );
+            }
+        }
+        Err(e) => println!("⚠  Warning: Could not validate saved model: {}", e),
+    }
 
     Ok(())
 }
@@ -896,8 +965,11 @@ pub fn validate(
             {
                 let error = quantized.quantization_error(&weight.data);
 
-                let name = if weight.name.len() > 37 {
-                    format!("{}...", &weight.name[..37])
+                let name = if weight.name.chars().count() > 37 {
+                    // Truncate by characters, not bytes, so a multi-byte name
+                    // can't panic on a non-char-boundary slice.
+                    let head: String = weight.name.chars().take(37).collect();
+                    format!("{head}...")
                 } else {
                     weight.name.clone()
                 };
@@ -943,7 +1015,13 @@ pub fn validate(
             validation_passed,
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
+        return if validation_passed {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "model validation failed — see the JSON report (\"validation_passed\": false)"
+            ))
+        };
     }
 
     println!("{}", "=".repeat(60));
@@ -951,15 +1029,19 @@ pub fn validate(
         println!("{}", "✓ VALIDATION PASSED".green().bold());
         println!();
         println!("The quantized model appears to be valid and should work correctly.");
+        println!("{}", "=".repeat(60));
+        Ok(())
     } else {
         println!("{}", "⚠  VALIDATION FAILED".yellow().bold());
         println!();
         println!("Issues detected. The quantized model may not work correctly.");
         println!("Review the warnings above and consider re-quantizing.");
+        println!("{}", "=".repeat(60));
+        // Non-zero exit so `validate` is usable as a CI gate.
+        Err(anyhow::anyhow!(
+            "model validation failed — see the issues reported above"
+        ))
     }
-    println!("{}", "=".repeat(60));
-
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1017,8 +1099,10 @@ pub fn batch(
     }
 
     if input_files.is_empty() {
-        println!("✗ No ONNX files found matching the input patterns");
-        return Ok(());
+        return Err(anyhow::anyhow!(
+            "no ONNX files matched the input pattern(s): {}",
+            inputs.join(", ")
+        ));
     }
 
     println!("Found {} models to process", input_files.len());
@@ -1110,7 +1194,12 @@ pub fn batch(
                     let output_str = output_path.to_string_lossy().to_string();
 
                     if skip_existing && output_path.exists() {
-                        let _guard = stdout.lock().unwrap();
+                        // Recover from a poisoned mutex (a prior worker
+                        // panicked while holding the lock).  The lock guards
+                        // only a `()` so the inner state is always valid;
+                        // panicking here would kill an otherwise-healthy
+                        // batch run.
+                        let _guard = stdout.lock().unwrap_or_else(|p| p.into_inner());
                         println!(
                             "{} {} (skipped — output exists)",
                             format!("[{}/{}]", idx + 1, total).bold(),
@@ -1131,7 +1220,7 @@ pub fn batch(
                         symmetric,
                         /* quiet */ true,
                     );
-                    let _guard = stdout.lock().unwrap();
+                    let _guard = stdout.lock().unwrap_or_else(|p| p.into_inner());
                     match res {
                         Ok(_) => {
                             println!(
@@ -1228,6 +1317,17 @@ pub fn batch(
         println!("{}", "✗ All models failed".red().bold());
     }
 
+    // Propagate a non-zero exit code when at least one model failed.  Without
+    // this, `quantize-rs batch ...` in a CI pipeline would report success
+    // even if every input failed to quantize.
+    if failed_count > 0 {
+        return Err(anyhow::anyhow!(
+            "{} of {} model(s) failed to quantize",
+            failed_count,
+            results.len()
+        ));
+    }
+
     Ok(())
 }
 
@@ -1258,6 +1358,7 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
     println!();
 
     let mut total_tasks = 0;
+    let mut failed_models: Vec<String> = Vec::new();
 
     if !config.models.is_empty() {
         println!(
@@ -1316,6 +1417,7 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
                 }
                 Err(e) => {
                     println!("✗ Failed: {}", e);
+                    failed_models.push(model_config.input.clone());
                 }
             }
         }
@@ -1347,7 +1449,7 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
                 &Default::default(),
                 config.native_int4,
                 config.symmetric,
-                /* jobs */ 1,
+                batch_config.jobs,
             )?;
         }
     }
@@ -1357,6 +1459,22 @@ pub fn run_config(config_path: &str, dry_run: bool) -> Result<()> {
     if dry_run {
         println!("{}", "✓ Dry run complete".green().bold());
         println!("Run without --dry-run to actually quantize models");
+    } else if !failed_models.is_empty() {
+        println!(
+            "{}",
+            format!(
+                "✗ {} model(s) failed; {} succeeded",
+                failed_models.len(),
+                total_tasks
+            )
+            .red()
+            .bold()
+        );
+        return Err(anyhow::anyhow!(
+            "{} model(s) failed: {}",
+            failed_models.len(),
+            failed_models.join(", ")
+        ));
     } else {
         println!("{}", "✓ Config execution complete".green().bold());
         if total_tasks > 0 {

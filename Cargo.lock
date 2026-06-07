@@ -113,6 +113,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-swap"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1415,6 +1424,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyo3-log"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45192e5e4a4d2505587e27806c7b710c231c40c56f3bfc19535d0bb25df52264"
+dependencies = [
+ "arc-swap",
+ "log",
+ "pyo3",
+]
+
+[[package]]
 name = "pyo3-macros"
 version = "0.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1441,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "quantize-rs"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "approx",
@@ -1449,6 +1469,7 @@ dependencies = [
  "colored",
  "criterion",
  "glob",
+ "log",
  "memmap2",
  "ndarray 0.15.6",
  "ndarray-npy",
@@ -1457,6 +1478,7 @@ dependencies = [
  "prost-build",
  "protox",
  "pyo3",
+ "pyo3-log",
  "rand 0.8.5",
  "rayon",
  "safetensors",
