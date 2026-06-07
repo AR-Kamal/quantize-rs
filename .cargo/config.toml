@@ -1,0 +1,19 @@
+# macOS link fix for the pyo3 `extension-module` feature.
+#
+# `extension-module` deliberately does NOT link libpython — the `_Py*` symbols
+# are provided by the host interpreter when the compiled extension is loaded.
+# That's correct for the wheel maturin builds (and maturin sets this flag
+# itself). But a plain `cargo test` / `cargo build` (e.g. `cargo test
+# --all-features` in CI) links the cdylib and the test binaries standalone, and
+# macOS's linker rejects the undefined `_Py*` symbols unless told to resolve
+# them at load time. `-undefined dynamic_lookup` does exactly that.
+#
+# Linux tolerates undefined symbols in shared objects by default, and Windows
+# links pythonXX.lib directly, so only the apple-darwin targets need this.
+# These sections apply ONLY when building for macOS — no effect on Linux/Windows.
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
