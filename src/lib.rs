@@ -2,8 +2,9 @@
 //!
 //! `quantize-rs` converts FP32 ONNX model weights to INT8 or INT4,
 //! reducing model size by 4--8x with minimal accuracy loss. It supports
-//! per-tensor and per-channel quantization, calibration-based range
-//! optimization, and writes ONNX-Runtime-compatible QDQ models.
+//! per-tensor and per-channel weight quantization, plus restricted static INT8
+//! Conv activation QDQ through `quantize_static`. Accuracy and runtime speed
+//! must be evaluated on representative workloads.
 //!
 //! # Modules
 //!
@@ -33,11 +34,15 @@ pub mod quantization;
 
 #[cfg(feature = "calibration")]
 pub use calibration::inference::ActivationEstimator;
+#[cfg(feature = "calibration")]
+pub use calibration::{quantize_static, quantize_static_matrix};
 pub use calibration::{stats::ActivationStats, CalibrationDataset};
 pub use config::Config;
 pub use errors::QuantizeError;
 pub use onnx_utils::graph_builder::QdqWeightInput;
-pub use onnx_utils::{ConnectivityReport, ModelInfo, OnnxModel, QuantizedWeightInfo, WeightTensor};
+pub use onnx_utils::{
+    ConnectivityReport, ModelInfo, OnnxModel, QuantizedWeightInfo, SelectedWeight, WeightTensor,
+};
 pub use quantization::{
     pack_int4, unpack_int4, QuantConfig, QuantParams, QuantizedWeightOutput, Quantizer,
 };

@@ -13,27 +13,12 @@ fn quantize_model(input_path: &str, output_path: &str) -> Result<()> {
     println!("Processing: {}", input_path);
 
     let mut model = OnnxModel::load(input_path)?;
-    let weights = model.extract_weights();
-
-    let config = QuantConfig::int8();
-    let quantizer = Quantizer::new(config);
-
-    let mut quantized_data = Vec::new();
-    for weight in &weights {
-        let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())?;
-
-        let (scales, zero_points) = quantized.get_all_scales_zero_points();
-        let is_per_channel = quantized.is_per_channel();
-
-        quantized_data.push(QdqWeightInput {
-            original_name: weight.name.clone(),
-            quantized_values: quantized.data(),
-            scales,
-            zero_points,
-            bits: quantized.bits(),
-            axis: if is_per_channel { Some(0) } else { None },
-        });
-    }
+    let config = QuantConfig::int8()
+        .with_per_channel(true)
+        .with_symmetric(true);
+    let outputs = Quantizer::new(config).quantize_model(&model)?;
+    anyhow::ensure!(!outputs.is_empty(), "No eligible Conv/MatMul/Gemm weights");
+    let quantized_data: Vec<QdqWeightInput> = outputs.into_iter().map(|o| o.qdq).collect();
 
     model.save_quantized(&quantized_data, output_path)?;
     println!("  ✓ Saved to: {}\n", output_path);

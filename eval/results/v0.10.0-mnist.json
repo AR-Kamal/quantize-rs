@@ -1,0 +1,122 @@
+{
+  "evaluated_at_utc": "2026-09-09T21:07:58.773224+00:00",
+  "provenance": {
+    "model_url": "https://media.githubusercontent.com/media/onnx/models/main/validated/vision/classification/mnist/model/mnist-12.onnx",
+    "model_sha256": "5c688690f8bacf667d4c2074af5ad0646ca328d7ab03eccf944a65b320171bdd",
+    "dataset_url": "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz",
+    "dataset_sha256": "731c5ac602752760c8e48fbffcf8c3b850d9dc2a2aedcf2cc48468fc17b673d1",
+    "seed": 2026,
+    "calibration_split": "1000 samples without replacement from x_train",
+    "test_split": "all 10000 x_test samples; no threshold tuning",
+    "preprocessing": "uint8 / 255 as FP32 NCHW",
+    "conversion": "opset 12 to 13; FP32 parity checked on first 100 test images"
+  },
+  "inputs_sha256": {
+    "model": "d50d717f86c12bcc125c54890e346879ac8b3d40247bc2d60f284834a87ce43e",
+    "calibration": "4e51d49301f63c2b534bf449ac3b182bb02fb592fd8aec5966808e9453b28fa0",
+    "test": "d095a9d976e4b0a096072cfdaed45bbd545648c38ff140526cbb8d20d3108fac",
+    "labels": "ff7e84b144c037e7215dfa787d6773550c5db83029d9a4e7bae6e90f605f081d",
+    "binary": "0c3f75e7f440847d46d0a51b8c8ef51db4f24c5712b61efcac6355da9edd029d"
+  },
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "python": "3.13.7",
+    "onnx": "1.20.1",
+    "onnxruntime": "1.22.1",
+    "numpy": "2.4.2",
+    "provider": "CPUExecutionProvider",
+    "intra_op_threads": 1
+  },
+  "policy": {
+    "weights": "same selected Conv weights in both INT8 variants; other weights FP32",
+    "calibration_samples": 1000,
+    "method": "minmax",
+    "minimum_baseline_accuracy": 0.95,
+    "maximum_accuracy_drop_pp": 1.0,
+    "memory": "separate process per model; RSS includes Python, data and ORT; not tensor memory",
+    "latency": "warm batch-1 session.run wall time; loading and preprocessing excluded"
+  },
+  "results": {
+    "fp32": {
+      "correct": 9890,
+      "examples": 10000,
+      "top1_accuracy": 0.989,
+      "latency_median_ms": 0.3786,
+      "latency_p95_ms": 3.704434999999998,
+      "latency_runs": 3000,
+      "model_bytes": 26143,
+      "model_sha256": "d50d717f86c12bcc125c54890e346879ac8b3d40247bc2d60f284834a87ce43e",
+      "optimized_vs_unoptimized_max_abs_error_first_100": 1.52587890625e-05,
+      "optimized_ops": {
+        "com.microsoft.nchwc::Conv": 2,
+        "com.microsoft.nchwc::ReorderOutput": 2,
+        "ai.onnx::MaxPool": 1,
+        "com.microsoft.nchwc::MaxPool": 1,
+        "ai.onnx::Reshape": 1,
+        "ai.onnx::Gemm": 1
+      },
+      "baseline_rss_mib": 88.96484375,
+      "session_rss_mib": 95.7109375,
+      "process_peak_rss_mib": 95.7109375,
+      "accuracy_drop_pp": 0.0
+    },
+    "weight_int8": {
+      "correct": 9890,
+      "examples": 10000,
+      "top1_accuracy": 0.989,
+      "latency_median_ms": 0.4133,
+      "latency_p95_ms": 1.0881399999999999,
+      "latency_runs": 3000,
+      "model_bytes": 16455,
+      "model_sha256": "7ccf78f816b3fc29dbbdc7a7a358a3b4cdcf8db1d9bd5fb16da3e7e6f35bce4c",
+      "optimized_vs_unoptimized_max_abs_error_first_100": 9.5367431640625e-06,
+      "optimized_ops": {
+        "ai.onnx::DequantizeLinear": 2,
+        "ai.onnx::Conv": 2,
+        "ai.onnx::Add": 2,
+        "ai.onnx::Relu": 2,
+        "ai.onnx::MaxPool": 1,
+        "com.microsoft.nchwc::ReorderInput": 1,
+        "com.microsoft.nchwc::MaxPool": 1,
+        "com.microsoft.nchwc::ReorderOutput": 1,
+        "ai.onnx::Reshape": 1,
+        "ai.onnx::Gemm": 1
+      },
+      "baseline_rss_mib": 88.984375,
+      "session_rss_mib": 95.79296875,
+      "process_peak_rss_mib": 95.79296875,
+      "accuracy_drop_pp": 0.0
+    },
+    "calibrated_int8": {
+      "correct": 9891,
+      "examples": 10000,
+      "top1_accuracy": 0.9891,
+      "latency_median_ms": 0.74665,
+      "latency_p95_ms": 2.5005899999999985,
+      "latency_runs": 3000,
+      "model_bytes": 18172,
+      "model_sha256": "571db07e7d9baffb2e06596f6d4f60c8cf12467b4d3f8d37797bba95ad958439",
+      "optimized_vs_unoptimized_max_abs_error_first_100": 1.33514404296875e-05,
+      "optimized_ops": {
+        "ai.onnx::QuantizeLinear": 2,
+        "ai.onnx::Transpose": 2,
+        "com.microsoft::QLinearConv": 2,
+        "ai.onnx::DequantizeLinear": 2,
+        "ai.onnx::Add": 2,
+        "com.microsoft::NhwcMaxPool": 1,
+        "ai.onnx::Relu": 1,
+        "com.microsoft.nchwc::ReorderInput": 1,
+        "com.microsoft.nchwc::MaxPool": 1,
+        "com.microsoft.nchwc::ReorderOutput": 1,
+        "ai.onnx::Reshape": 1,
+        "ai.onnx::Gemm": 1
+      },
+      "baseline_rss_mib": 89.48828125,
+      "session_rss_mib": 96.57421875,
+      "process_peak_rss_mib": 96.57421875,
+      "accuracy_drop_pp": -0.009999999999998899
+    }
+  },
+  "accuracy_gate_passed": true
+}

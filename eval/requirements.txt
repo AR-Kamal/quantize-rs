@@ -3,11 +3,14 @@ onnx>=1.15.0
 onnxruntime>=1.17.0
 transformers>=4.35.0
 numpy>=1.24.0
+psutil>=5.9.0  # process RSS for CNN and GPT-2 evaluations
+tokenizers>=0.15.0  # pinned GPT-2 vocabulary/merges; no model downloads for tokenization
+pyarrow>=14.0.0  # required WikiText-2 test Parquet; no fallback corpus
 
 # Required for --export only
 # Any torch 2.x works; the export uses torch.jit.trace + legacy ONNX exporter
 # (opset 14) so onnxscript is NOT required.
 torch>=2.0.0
 
-# Optional — enables real WikiText-2 perplexity instead of built-in texts
-# datasets>=2.14.0
+# The GPT-2 evaluator reads the checksum-pinned test Parquet directly.
+# The datasets package is not required.

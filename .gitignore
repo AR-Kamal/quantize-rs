@@ -1,61 +1,81 @@
-# Build output
-/target
+# Build and packaging output
+/target/
+/build/
+/dist/
+/wheels/
+*.whl
+*.egg
+*.egg-info/
+*.dist-info/
 
-# Cargo lock (omitted for libraries; apps should keep it)
-Cargo.lock
+# Keep Cargo.lock, py.typed, quantize_rs.pyi, source/tests and Markdown in Git.
+# Curated evaluation evidence in /eval/results/ is also intentionally included.
 
-# ONNX model files — large binaries, never commit
+# Large ONNX models and generated/downloaded model directories
 *.onnx
-examples/*.onnx
-
-# Generated / downloaded model directories
 /test_models/
 /eval/models/
 
 # Python virtual environments
 .venv/
-/test_venv/
-/test_venv2/
 venv/
 env/
+/test_venv*/
+.tox/
+.nox/
 
-# Python cache
-/__pycache__/
+# Python caches and coverage output (at any depth)
+__pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+/coverage.xml
 
-# Scratch / temp files
-map.txt
-test-config.yaml
-test_python_bindings.py
-test.py
+# Local credentials and environment settings; retain shareable templates
 .pypirc
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 
-# Quantize-rs output directories
+# Known root-level scratch scripts and data
+/map.txt
+/test-config.yaml
+/test_python_bindings.py
+/test.py
+/test_calibration.npy
+/test_edge_case*
+
+# Generated quantization and example output (not /eval/results/)
+/quantized/
 /quantized_batch/
 /quantized_perchannel/
 /config_output/
 /output/
+/results/
 
-# Editors
+# Editors and operating-system metadata
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.DS_Store
+Thumbs.db
+Desktop.ini
 
-# Claude Code local config
-/.claude
-
-# Keep example YAML configs
-!examples/*.yaml
-!examples/config.yaml
+# Local Claude configuration
+/.claude/
 
 
-# ARCHITECTURE.md
-RELEASING.md
+# .md files to excelude
 ROADMAP.md
-PYTHON_BUILD_INSTRUCTIONS.md 
+gemini*.md
 RELEASE_v0.9_TODO.md
-
-test_edge_case*
+RELEASE_v0.10.0.md
+RELEASING.md

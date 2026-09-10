@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "version": "0.10.0",
+  "status": "local_verification_passed_hosted_gates_pending",
+  "recorded_at_utc": "2026-09-10T01:38:52.438451+00:00",
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.7",
+    "rust": "1.92.0",
+    "msrv": "1.88.0",
+    "maturin": "1.11.5"
+  },
+  "build_inputs_sha256": {
+    "Cargo.toml": "377cae73ebeae1a4514096ce9f74dfc06c9c84edf34f5ca511feee74022b4110",
+    "Cargo.lock": "0edb86ec8f4f7396f701a71856efd8f2612c470c4fb05bcf12d1d8fe366805fe",
+    "pyproject.toml": "4c24535b0645e7f6c47bc2b61b53f16f2b7dbc69b8671681b6a3be5c3385904d",
+    "build.rs": "9ae25032cb5872f71b328b63ae3f1ac76f0e927aed319039f019c5106298fd61",
+    "quantize_rs.pyi": "5a89b953beaae5c0529bf53996c2d2b1912ce0122d1e2d8a25e7c7311e7dd986",
+    "py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/calibration/inference.rs": "ec474b357934798e687295b8ec16e6394bba1a224536b0c18c2fc726b61b541a",
+    "src/calibration/methods.rs": "f547611778f7d5440d32c18d4b68a14736c26d1c89f5f94f19c180261b4b32f2",
+    "src/calibration/mod.rs": "db01b56e97d1fbc83a1b176bbb2f2c0b539f5d76331d503ac513f9862bb87159",
+    "src/calibration/static_quantization.rs": "452c1eed0cc8585afcff11c88aa49cb8a99e5d33ddde22bdd3b625d32b506a61",
+    "src/calibration/stats.rs": "0765e2b3bf6ac0271ab68d9fbb18960f1bde6ed9daa14a418d961bf68a1c9ea0",
+    "src/cli/commands.rs": "2b2c266be7a17f4d7d1dcb1a053f42778594533bb8d3ab0774677442a744f699",
+    "src/cli/mod.rs": "97508e7db572c66ac7ff2be2dc34df200f36317831939d8f36b5703bcfdc0426",
+    "src/config.rs": "564350dcbbb926be1f4f8375d6c3f7442a7e1a5e7223e0745d2e3323f9e8280a",
+    "src/errors.rs": "7f2a0773c4361ee39fd3e862ee2648aa27ffd134b1a5cff2c1977d370ab896d6",
+    "src/lib.rs": "b2bbdadb28f29787881c110e3c7d1c5590713931efe21a1021e3654dcfef8381",
+    "src/main.rs": "9443c574933fd1bcea3dc02eb441f9e07d47ce7a09e47a688c3520bf97dfc06f",
+    "src/onnx_proto.rs": "5c9061bc5950a86f45ff0a48639b271dcc978912b1189ba9d5c3ed631f084696",
+    "src/onnx_utils/calibrated.rs": "f946840a9627a4e3dc2d290b8b46410df37bb5a99f3bf3efafcf581df559a852",
+    "src/onnx_utils/graph_builder.rs": "68b315adb9cad0798e25c3a8a87a8cb2859650e62078ef9f32d7a3dfb06e1545",
+    "src/onnx_utils/matrix_calibrated.rs": "f37b86386e7c7076be39f2b83447e7562f85c2b786b649fcb5a6f8cd5f028462",
+    "src/onnx_utils/mod.rs": "5d01212e5f1194ee3488404786baeaf25ee250354a9b9a49c10371eb93adf5bd",
+    "src/onnx_utils/quantization_nodes.rs": "2131b73719504182c4b1ee0c9b24448d1ff7cbaf53b3363c790f77a805dfc7c5",
+    "src/onnx_utils/selection.rs": "b19be5c8bfd2334ca6719f8fec20c740af0c8ff23bbb07d1f1c362099b57a9da",
+    "src/python.rs": "a2c9edf07b2d7949ea5f4c659d4cdcab866f80a84c91f39da9ee0cb1f16cf434",
+    "src/quantization/mod.rs": "eea17b4aa9cbf9be1d55e832eb97bb1ed282030111d70759cde06298741fd765",
+    "proto/onnx.proto3": "9c19582151bbe52b78a51c96b654a6d8ff1b16b2723250290f7bae291e42f136"
+  },
+  "cli_sha256": "0c3f75e7f440847d46d0a51b8c8ef51db4f24c5712b61efcac6355da9edd029d",
+  "checks": {
+    "local-checks": [
+      {
+        "name": "tests-default",
+        "exit_code": 0,
+        "elapsed_seconds": 386.84
+      },
+      {
+        "name": "tests-all",
+        "exit_code": 0,
+        "elapsed_seconds": 290.46
+      },
+      {
+        "name": "tests-no-default",
+        "exit_code": 0,
+        "elapsed_seconds": 146.21
+      },
+      {
+        "name": "tests-safetensors",
+        "exit_code": 0,
+        "elapsed_seconds": 47.57
+      },
+      {
+        "name": "clippy",
+        "exit_code": 0,
+        "elapsed_seconds": 33.16
+      },
+      {
+        "name": "fmt",
+        "exit_code": 0,
+        "elapsed_seconds": 2.72
+      },
+      {
+        "name": "examples",
+        "exit_code": 0,
+        "elapsed_seconds": 2.03
+      },
+      {
+        "name": "examples-no-default",
+        "exit_code": 0,
+        "elapsed_seconds": 13.61
+      },
+      {
+        "name": "rustdoc",
+        "exit_code": 0,
+        "elapsed_seconds": 27.87
+      },
+      {
+        "name": "benches",
+        "exit_code": 0,
+        "elapsed_seconds": 15920.66
+      }
+    ],
+    "runtime-checks": [
+      {
+        "name": "inspect-wheel",
+        "exit_code": 0,
+        "elapsed_seconds": 0.22
+      },
+      {
+        "name": "install-wheel",
+        "exit_code": 0,
+        "elapsed_seconds": 2.48
+      },
+      {
+        "name": "import-wheel",
+        "exit_code": 0,
+        "elapsed_seconds": 0.21
+      },
+      {
+        "name": "ort-basic",
+        "exit_code": 0,
+        "elapsed_seconds": 2.72
+      },
+      {
+        "name": "ort-axes-python",
+        "exit_code": 0,
+        "elapsed_seconds": 2.49
+      },
+      {
+        "name": "ort-conv-python",
+        "exit_code": 0,
+        "elapsed_seconds": 1.0
+      },
+      {
+        "name": "ort-matrix",
+        "exit_code": 0,
+        "elapsed_seconds": 1.88
+      }
+    ],
+    "sdist-checks": [
+      {
+        "name": "sdist-final",
+        "exit_code": 0,
+        "elapsed_seconds": 33.75
+      },
+      {
+        "name": "inspect-sdist",
+        "exit_code": 0,
+        "elapsed_seconds": 0.74
+      },
+      {
+        "name": "rebuild-sdist",
+        "exit_code": 0,
+        "elapsed_seconds": 135.15
+      }
+    ],
+    "rebuilt-checks": [
+      {
+        "name": "inspect-rebuilt-wheel",
+        "exit_code": 0,
+        "elapsed_seconds": 0.14
+      },
+      {
+        "name": "install-rebuilt-wheel",
+        "exit_code": 0,
+        "elapsed_seconds": 2.0
+      },
+      {
+        "name": "import-rebuilt-wheel",
+        "exit_code": 0,
+        "elapsed_seconds": 0.63
+      },
+      {
+        "name": "rebuilt-axes-python",
+        "exit_code": 0,
+        "elapsed_seconds": 1.85
+      },
+      {
+        "name": "rebuilt-conv-python",
+        "exit_code": 0,
+        "elapsed_seconds": 0.99
+      }
+    ]
+  },
+  "additional_checks": {
+    "msrv_all_features": "passed",
+    "cargo_publish_dry_run": "passed with --locked --allow-dirty; no upload",
+    "archive_contents": "passed",
+    "evaluation_unit_tests": "7 passed",
+    "tests-default": {
+      "passed": 186,
+      "ignored_including_doctests": 7
+    },
+    "tests-all": {
+      "passed": 190,
+      "ignored_including_doctests": 7
+    },
+    "tests-no-default": {
+      "passed": 115,
+      "ignored_including_doctests": 1
+    },
+    "tests-safetensors": {
+      "passed": 118,
+      "ignored_including_doctests": 1
+    }
+  },
+  "quality": {
+    "mnist_accuracy_gate_passed": true,
+    "gpt2_gate": {
+      "passed": true,
+      "relative_perplexity_increase_percent": 1.6171445803769169,
+      "maximum_increase_percent": 3.0,
+      "maximum_baseline_perplexity": 100.0,
+      "scope": "bounded regression thresholds chosen before measurement; not universal quality guarantees"
+    }
+  },
+  "package_validation": {
+    "checkout_wheel_profile": "release",
+    "sdist_rebuild_profile": "dev",
+    "sdist_rebuild_runtime": "installed, version/import, axes and Conv Python suites passed"
+  },
+  "limitations": [
+    "Windows local verification; hosted Linux/macOS/Windows CI and release workflow pending.",
+    "Local crate dry run used the uncommitted working tree; final clean-commit verification is required.",
+    "Accuracy evaluations overlapped compiler activity; their timings/RSS are not performance claims.",
+    "Elapsed check times include build-directory lock waits and concurrent work.",
+    "Release-status documentation and evidence were finalized after compilation; build input hashes remained unchanged.",
+    "No commit, tag push or registry publication was performed."
+  ]
+}

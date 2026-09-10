@@ -1,6 +1,6 @@
 [package]
 name = "quantize-rs"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 # Minimum supported Rust version. Our own code needs 1.87 (`<int>::is_multiple_of`);
 # the binding floor is 1.88, required by `time` — a build-dependency pulled in
@@ -16,7 +16,7 @@ documentation = "https://docs.rs/quantize-rs"
 readme = "README.md"
 keywords = ["quantization", "neural-network", "onnx", "ml", "optimization"]
 categories = ["command-line-utilities", "science", "compression"]
-exclude = ["*.onnx", "examples/*.onnx", "quantize_rs.pyi", "py.typed"]
+exclude = ["*.onnx", "examples/*.onnx", "quantize_rs.pyi", "py.typed", "test.py", "test_python_bindings.py"]
 
 
 [dependencies]
@@ -78,11 +78,6 @@ approx = "0.5"
 criterion = "0.5"
 tempfile = "3"
 proptest = "1"
-
-# Maturin looks for this section when building Python wheels
-[package.metadata.maturin]
-python-source = "python"
-module-name = "quantize_rs"
 
 [profile.release]
 opt-level = 3

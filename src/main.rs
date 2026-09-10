@@ -109,9 +109,9 @@ fn collect_layer_bits(pairs: Vec<(String, u8)>) -> HashMap<String, u8> {
     name = "quantize-rs",
     version,
     about = "Neural network quantization toolkit",
-    long_about = "Convert ONNX models to INT8/INT4 weight-only QDQ to shrink model files 4-8x on disk. \
-                  Weights are quantized and activations stay FP32, so this reduces download/storage \
-                  size rather than guaranteeing faster inference."
+    long_about = "Convert ONNX weights to INT8/INT4 QDQ. Restricted Conv and experimental matrix \
+                  calibration commands also insert activation QDQ. Model size, accuracy and runtime \
+                  acceleration depend on the model and deployment runtime."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -130,12 +130,8 @@ enum Commands {
         #[arg(short, long, default_value = "8", value_parser = parse_bits)]
         bits: u8,
 
-        /// Per-channel quantization (separate scale/zero-point per output
-        /// channel).  Always uses axis 0 (output-channel dim) — Conv and
-        /// MatMul weights are the intended target.  For Transformer linear
-        /// layers that expect axis=1 quantization, omit `--per-channel` or
-        /// implement axis=1 in a library call (not currently supported via
-        /// the CLI).
+        /// Per-channel weights: Conv axis 0, MatMul last weight dimension,
+        /// Gemm axis 1 (axis 0 when transB=1).
         #[arg(long)]
         per_channel: bool,
 
@@ -176,12 +172,8 @@ enum Commands {
         #[arg(short, long, default_value = "8", value_parser = parse_bits)]
         bits: u8,
 
-        /// Per-channel quantization (separate scale/zero-point per output
-        /// channel).  Always uses axis 0 (output-channel dim) — Conv and
-        /// MatMul weights are the intended target.  For Transformer linear
-        /// layers that expect axis=1 quantization, omit `--per-channel` or
-        /// implement axis=1 in a library call (not currently supported via
-        /// the CLI).
+        /// Per-channel weights: Conv axis 0, MatMul last weight dimension,
+        /// Gemm axis 1 (axis 0 when transB=1).
         #[arg(long)]
         per_channel: bool,
 
@@ -263,7 +255,26 @@ enum Commands {
         dry_run: bool,
     },
 
+    /// Experimental MatMul/Gemm activation QDQ for one fixed FP32 [1, K] input.
     #[cfg(feature = "calibration")]
+    CalibrateMatrix {
+        #[arg(value_name = "MODEL")]
+        input: String,
+        /// Representative FP32 samples, NPY shape [samples, K].
+        #[arg(long)]
+        data: String,
+        #[arg(short, long, default_value = "matrix_calibrated.onnx")]
+        output: String,
+        #[arg(long, default_value = "minmax", value_parser = parse_calibration_method)]
+        method: String,
+        #[arg(long = "exclude", value_name = "WEIGHT")]
+        excluded_layers: Vec<String>,
+        #[arg(long, default_value = "0")]
+        min_elements: usize,
+    },
+
+    #[cfg(feature = "calibration")]
+    /// Static INT8 Conv activation QDQ; requires representative data and fixed FP32 NCHW input.
     Calibrate {
         #[arg(value_name = "MODEL")]
         input: String,
@@ -277,12 +288,7 @@ enum Commands {
         #[arg(short, long, default_value = "8", value_parser = parse_bits)]
         bits: u8,
 
-        /// Per-channel quantization (separate scale/zero-point per output
-        /// channel).  Always uses axis 0 (output-channel dim) — Conv and
-        /// MatMul weights are the intended target.  For Transformer linear
-        /// layers that expect axis=1 quantization, omit `--per-channel` or
-        /// implement axis=1 in a library call (not currently supported via
-        /// the CLI).
+        /// Quantize Conv weights per output channel (axis 0).
         #[arg(long)]
         per_channel: bool,
 
@@ -298,11 +304,11 @@ enum Commands {
         min_elements: usize,
 
         /// Per-layer bit-width override (may be specified multiple times).
-        /// Format: LAYER=BITS, e.g. --layer-bits conv1.weight=4
+        /// Only LAYER=8 is supported by static calibration.
         #[arg(long = "layer-bits", value_name = "LAYER=BITS", value_parser = parse_layer_bits)]
         layer_bits: Vec<(String, u8)>,
 
-        /// Store INT4 weights as native ONNX `DataType::Int4` (opset 21).
+        /// Retained for compatibility; rejected by static INT8 calibration.
         #[arg(long = "native-int4")]
         native_int4: bool,
 
@@ -419,6 +425,24 @@ fn main() -> Result<()> {
             commands::run_config(&config_file, dry_run)?;
         }
 
+        #[cfg(feature = "calibration")]
+        Commands::CalibrateMatrix {
+            input,
+            data,
+            output,
+            method,
+            excluded_layers,
+            min_elements,
+        } => {
+            commands::calibrate_matrix(
+                &input,
+                &data,
+                &output,
+                &method,
+                &excluded_layers,
+                min_elements,
+            )?;
+        }
         #[cfg(feature = "calibration")]
         Commands::Calibrate {
             input,

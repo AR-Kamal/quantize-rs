@@ -10,13 +10,14 @@ const NUM_BINS: usize = 256;
 /// Incremental activation statistics for a single layer.
 ///
 /// Tracks min, max, mean, standard deviation, and a 256-bin histogram.
-/// Supports incremental updates via Chan's parallel algorithm.
+/// Supports incremental updates via Chan's parallel algorithm. Sums, means and
+/// second moments use f64 internally; mean/std getters retain their f32 API.
 #[derive(Debug, Clone)]
 pub struct ActivationStats {
     min: f32,
     max: f32,
-    mean: f32,
-    std: f32,
+    mean: f64,
+    std: f64,
     count: usize,
 
     /// Running sum of squared deviations (Welford's M2) for incremental std.
@@ -38,11 +39,11 @@ impl ActivationStats {
     }
     /// Running mean.
     pub fn mean(&self) -> f32 {
-        self.mean
+        self.mean as f32
     }
     /// Running standard deviation.
     pub fn std(&self) -> f32 {
-        self.std
+        self.std as f32
     }
     /// Number of observations.
     pub fn count(&self) -> usize {
@@ -65,11 +66,11 @@ impl ActivationStats {
         let min = finite.iter().copied().fold(f32::INFINITY, f32::min);
         let max = finite.iter().copied().fold(f32::NEG_INFINITY, f32::max);
 
-        let sum: f32 = finite.iter().sum();
-        let mean = sum / finite.len() as f32;
+        let sum: f64 = finite.iter().map(|&x| x as f64).sum();
+        let mean = sum / finite.len() as f64;
 
-        let m2: f64 = finite.iter().map(|&x| ((x - mean) as f64).powi(2)).sum();
-        let std = (m2 / finite.len() as f64).sqrt() as f32;
+        let m2: f64 = finite.iter().map(|&x| (x as f64 - mean).powi(2)).sum();
+        let std = (m2 / finite.len() as f64).sqrt();
 
         let histogram_bins = build_histogram(data, min, max);
 
@@ -133,14 +134,14 @@ impl ActivationStats {
             .sum();
 
         // Chan's parallel algorithm for combining M2 values
-        let delta = data_mean - self.mean as f64;
+        let delta = data_mean - self.mean;
         self.m2 = self.m2 + data_m2 + delta * delta * old_count * new_count / combined_count;
 
-        // Do the divide in f64 before casting; the previous form cast to f32
-        // mid-expression and lost precision when old_count was large.
-        self.mean = (((self.mean as f64) * old_count + data_sum) / combined_count) as f32;
+        // Keep the running mean in f64 between merges, too. Public getters
+        // retain their f32 signatures; only the final reported value is rounded.
+        self.mean += delta * new_count / combined_count;
         self.count = combined_count as usize;
-        self.std = (self.m2 / combined_count).sqrt() as f32;
+        self.std = (self.m2 / combined_count).sqrt();
 
         // If range expanded, re-bin existing data into the new range
         if new_min < self.hist_min || new_max > self.hist_max {
@@ -339,7 +340,7 @@ pub fn calculate_optimal_range(data: &[f32], method: CalibrationMethod) -> (f32,
 /// Compute the optimal quantization range directly from pre-collected
 /// [`ActivationStats`], without regenerating samples from the histogram.
 ///
-/// This is the preferred path inside `Quantizer::with_calibration`: the stats
+/// This is the activation-range path used by `quantize_static`: the stats
 /// already carry the full empirical distribution (min/max + 256-bin histogram),
 /// so there is no benefit to re-sampling and re-binning.  It's also
 /// deterministic (no RNG) and O(num_bins) instead of O(num_samples).
@@ -597,6 +598,51 @@ fn optimize_mse_from_stats(stats: &ActivationStats) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_batch_mean_does_not_lose_unit_increments() {
+        // Sequential f32 accumulation stops increasing at 2^24.
+        let data = vec![1.0; (1 << 24) + 2];
+        let stats = ActivationStats::from_data(&data);
+        assert_eq!(stats.mean(), 1.0);
+        assert_eq!(stats.std(), 0.0);
+        assert_eq!(stats.count(), data.len());
+    }
+
+    #[test]
+    fn moments_remain_finite_for_extreme_finite_samples() {
+        let constant = ActivationStats::from_data(&[f32::MAX, f32::MAX]);
+        assert_eq!(constant.mean(), f32::MAX);
+        assert_eq!(constant.std(), 0.0);
+        let mut split = ActivationStats::from_data(&[-f32::MAX]);
+        split.update(&[f32::MAX]);
+        let whole = ActivationStats::from_data(&[-f32::MAX, f32::MAX]);
+        assert_eq!(whole.mean(), 0.0);
+        assert_eq!(whole.std(), f32::MAX);
+        assert_eq!(split.mean(), whole.mean());
+        assert_eq!(split.std(), whole.std());
+    }
+
+    #[test]
+    fn batch_partition_preserves_running_moments() {
+        // At this magnitude, rounding the mean to f32 between merges loses
+        // half-unit contributions and changes subsequent variance estimates.
+        let data: Vec<f32> = (0..4096)
+            .map(|i| 16_777_216.0 + ((i % 4) * 2) as f32)
+            .collect();
+        let whole = ActivationStats::from_data(&data);
+        for batch in [1, 3, 31, 512] {
+            let mut split = ActivationStats::default();
+            for chunk in data.chunks(batch) {
+                split.update(chunk);
+            }
+            assert_eq!(split.count(), whole.count());
+            assert!((split.mean - whole.mean).abs() < 1e-7);
+            assert!((split.std - whole.std).abs() < 1e-7);
+        }
+        assert_eq!(whole.mean, 16_777_219.0);
+        assert!((whole.std - 5.0f64.sqrt()).abs() < 1e-12);
+    }
 
     #[test]
     fn test_activation_stats() {

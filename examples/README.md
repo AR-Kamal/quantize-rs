@@ -19,7 +19,7 @@ curl -L -o resnet18-v1-7.onnx https://github.com/onnx/models/raw/main/validated/
 ```bash
 cargo run --example basic_quantization
 cargo run --example batch_quantize
-cargo run --example activation_calibration
+cargo run --example activation_calibration -- --model model.onnx --calibration-data samples.npy --per-channel
 cargo run --example validate_real_model -- --bits 8 --per-channel model.onnx
 ```
 
@@ -27,16 +27,21 @@ cargo run --example validate_real_model -- --bits 8 --per-channel model.onnx
 
 ### `basic_quantization.rs`
 
-Minimal INT8 quantization workflow: load model, extract weights, quantize, save, and print compression results.
+Minimal INT8 quantization workflow: load a model, select direct Conv/MatMul/Gemm weights, quantize per-channel with inferred axes, save, and print compression results.
 
 ### `batch_quantize.rs`
 
-Iterates over multiple model files and quantizes each one, skipping any that are not found on disk.
+Iterates over multiple model files and quantizes each one using the same model-aware selection and axes, skipping any that are not found on disk.
 
 ### `activation_calibration.rs`
 
-Full activation-based calibration pipeline. Loads or generates calibration data, runs inference through tract to collect per-layer activation statistics, quantizes using the observed ranges, and saves the result. Accepts `--model`, `--calibration-data`, `--output`, `--bits`, `--per-channel`, and `--shape` arguments.
+Static INT8 Conv calibration using representative `.npy` samples. Requires
+opset >= 13 and one fixed FP32 NCHW input with batch 1. Weights use their own
+ranges, and activation QDQ uses observed tensor statistics. Accepts `--model`,
+`--calibration-data`, `--output`, `--bits 8`, and `--per-channel`. Missing data is
+an error; the example no longer generates random samples or promises an accuracy
+improvement. See [CALIBRATION.md](../CALIBRATION.md).
 
 ### `validate_real_model.rs`
 
-Loads any ONNX file, quantizes all weights, and reports per-tensor mean absolute error (MAE) and compression ratio. Optionally saves the quantized model and validates the resulting QDQ graph. Useful for quickly checking quantization quality on a real model without running inference. Accepts `--bits`, `--per-channel`, `--min-elements`, and `--output`.
+Loads an ONNX file, quantizes selected direct Conv/MatMul/Gemm weights, and reports per-tensor mean squared error (MSE) and compression ratio. Optionally saves the quantized model and validates the resulting QDQ graph. Useful for checking weight reconstruction quality without running inference. Accepts `--bits`, `--per-channel`, `--min-elements`, and `--output`. See [selection rules and axes](../OPERATOR_QUANTIZATION.md).

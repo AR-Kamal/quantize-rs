@@ -38,7 +38,8 @@ def quantize(
         input_path: Path to the input ONNX model.
         output_path: Path to write the quantized model.
         bits: Bit width, ``8`` or ``4``.
-        per_channel: Per-channel (axis-0) quantization for Conv/MatMul weights.
+        per_channel: Conv axis 0, MatMul last weight axis, Gemm axis 1 or 0
+            according to transB. Conflicting shared uses are rejected.
         excluded_layers: Initializer names to leave in FP32.
         min_elements: Skip tensors with fewer than this many elements.
         layer_bits: Per-layer bit-width overrides, e.g. ``{"conv1.weight": 4}``.
@@ -58,23 +59,20 @@ def quantize_with_calibration(
     sample_shape: Optional[list[int]] = ...,
     native_int4: bool = ...,
     symmetric: bool = ...,
+    excluded_layers: Optional[list[str]] = ...,
+    min_elements: int = ...,
+    layer_bits: Optional[dict[str, int]] = ...,
 ) -> None:
-    """Activation-based (calibrated) quantization of an ONNX model.
+    """Static INT8 Conv activation QDQ with representative .npy data.
 
-    Args:
-        input_path: Path to the input ONNX model.
-        output_path: Path to write the quantized model.
-        calibration_data: Path to a ``.npy`` file, or ``None`` for random samples.
-        bits: Bit width, ``8`` or ``4``.
-        per_channel: Per-channel (axis-0) quantization for Conv/MatMul weights.
-        method: ``"minmax"``, ``"percentile"``, ``"percentile:NN"``,
-            ``"entropy"`` or ``"mse"``.
-        num_samples: Number of random samples when ``calibration_data`` is ``None``.
-        sample_shape: Shape of random samples, e.g. ``[3, 224, 224]``.
-        native_int4: Store INT4 as native ONNX ``DataType.Int4`` (opset 21).
-        symmetric: Force ``zero_point == 0`` (symmetric quantization).
+    Requires one fixed FP32 NCHW input, batch 1 and opset >= 13.
+    Weights use their own ranges. Only selected Conv boundaries receive QDQ.
+    INT4/native_int4 and missing calibration_data are rejected. num_samples is
+    retained but unused; sample_shape, if supplied, must match the dataset.
+    layer_bits accepts only 8; exclusions match Conv initializer names.
     """
     ...
+
 
 def model_info(input_path: str) -> ModelInfo:
     """Return structural metadata (name, version, opset, nodes, inputs, outputs)."""

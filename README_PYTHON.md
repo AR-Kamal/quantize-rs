@@ -1,229 +1,143 @@
 # quantize-rs Python API
 
-Python bindings for quantize-rs, a neural network quantization toolkit for ONNX models.
+Python bindings for the Rust ONNX quantization toolkit. Install with
+`pip install quantization-rs`; build this checkout with
+`maturin develop --features python`. Wheels use abi3-py39 (Python 3.9+).
 
-## Scope
+This checkout is the unpublished **v0.10.0** candidate. Build this checkout to
+test the candidate; registry installation commands install the published version.
+See [release readiness](RELEASE_v0.10.0.md) and
+[CALIBRATION.md](CALIBRATION.md) for migration from published v0.9 behavior.
+The [labeled CNN evaluation](eval/CNN_EVALUATION.md) records MNIST accuracy,
+latency and memory for the underlying Rust calibration pipeline.
 
-quantize-rs is designed and validated primarily for **computer-vision (CNN-style) ONNX models** -- ResNet, MobileNet, SqueezeNet, and similar architectures. Weight-only quantization (`quantize()`) is model-agnostic and works on any FP32 ONNX file. Activation calibration (`quantize_with_calibration()`) runs inference through [tract](https://github.com/sonos/tract), whose op coverage is centered on CNNs; transformer / LLM / RNN models may fail to load through tract or hit unsupported ops during calibration.
+The separate experimental [matrix activation prototype](MATRIX_CALIBRATION.md)
+is currently a Rust/CLI API. Python activation calibration remains Conv-only.
 
-## Installation
+## Weight-only quantization
 
-```bash
-pip install quantization-rs
-```
-
-Wheels are built with PyO3 `abi3-py39`, so a single wheel per OS/arch covers
-Python 3.9 through 3.13+.  No interpreter-specific wheels needed.
-
-Build from source (requires Rust toolchain and maturin):
-
-```bash
-pip install maturin
-maturin develop --release --features python
-```
-
-## API reference
-
-### `quantize(input_path, output_path, bits=8, per_channel=False, excluded_layers=None, min_elements=0, layer_bits=None, native_int4=False, symmetric=False)`
-
-Weight-based quantization. Loads the model, quantizes all weight tensors, and saves the result in ONNX QDQ format.
-
-**Parameters:**
-
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| `input_path` | str | required | Path to input ONNX model |
-| `output_path` | str | required | Path to save quantized model |
-| `bits` | int | 8 | Bit width: 4 or 8 |
-| `per_channel` | bool | False | Use per-channel quantization (separate scale/zp per output channel, axis 0 only — see Limitations) |
-| `excluded_layers` | list[str] or None | None | Initializer names to leave in FP32 |
-| `min_elements` | int | 0 | Skip tensors with fewer than N elements (e.g., biases) |
-| `layer_bits` | dict[str, int] or None | None | Per-layer bit-width overrides, e.g. `{"conv1.weight": 4}` |
-| `native_int4` | bool | False | Store INT4 weights as ONNX `DataType.Int4` (opset 21). True 8x on-disk compression but requires opset-21 runtime. No effect on INT8-only models. |
-| `symmetric` | bool | False | Symmetric quantization (`zero_point == 0`). Required by most ORT / TensorRT INT8 matmul kernels for per-channel weights. |
-
-**Example:**
+The [bounded GPT-2 INT8 evaluation](eval/GPT2_EVALUATION.md) records matrix-weight
+coverage, held-out perplexity and runtime behavior for the underlying Rust path.
 
 ```python
 import quantize_rs
-
-# Plain INT8
-quantize_rs.quantize("model.onnx", "model_int8.onnx", bits=8)
-
-# INT4 with native opset-21 storage (8x on-disk)
-quantize_rs.quantize("model.onnx", "model_int4.onnx", bits=4, native_int4=True)
-
-# Symmetric per-channel INT8 for ORT INT8 matmul kernels
-quantize_rs.quantize(
-    "model.onnx",
-    "model_int8_sym.onnx",
-    bits=8,
-    per_channel=True,
-    symmetric=True,
-)
-
-# Mixed precision: some layers INT4, rest INT8
-quantize_rs.quantize(
-    "model.onnx",
-    "out.onnx",
-    bits=8,
-    layer_bits={"fc.weight": 4},
-    excluded_layers=["embedding.weight"],
-    min_elements=1024,  # skip small tensors (biases) and keep them FP32
-)
+quantize_rs.quantize("model.onnx", "weights_int8.onnx", per_channel=True, symmetric=True)
+quantize_rs.quantize("model.onnx", "weights_int4.onnx", bits=4, native_int4=True)
 ```
 
----
+`quantize(input_path, output_path, bits=8, per_channel=False,
+excluded_layers=None, min_elements=0, layer_bits=None, native_int4=False,
+symmetric=False)`
 
-### `quantize_with_calibration(input_path, output_path, calibration_data=None, bits=8, per_channel=False, method="minmax", num_samples=100, sample_shape=None, native_int4=False, symmetric=False)`
+| Parameter | Meaning |
+|-----------|---------|
+| `input_path`, `output_path` | ONNX source and destination paths |
+| `bits` | 8 or 4 |
+| `per_channel` | Conv axis 0; MatMul last weight dimension; Gemm axis 1 or 0 according to `transB` |
+| `excluded_layers` | Initializer names to retain in FP32 |
+| `min_elements` | Skip smaller tensors; default 0 |
+| `layer_bits` | Initializer-name dictionary of 4/8 bit overrides |
+| `native_int4` | Store INT4 natively at opset 21; otherwise widen to INT8 storage |
+| `symmetric` | Force weight zero points to zero |
 
-Activation-based calibration quantization. Runs inference on calibration samples to determine optimal quantization ranges per layer, then quantizes using those ranges. The full filter pipeline (`excluded_layers`, `min_elements`, `layer_bits`) is honored; pass these via `quantize()` directly if you need to skip layers explicitly.
+This path selects direct inline FP32 Conv/MatMul/Gemm weight initializers, outputs weight
+DequantizeLinear nodes, and primarily reduces file size. Activation parameters do
+not affect weight ranges. Runtime memory reduction or faster inference is not
+guaranteed. External tensor files are unsupported.
 
-**Parameters:**
+Embeddings, biases and unrelated constants remain unchanged. Shared weights with
+conflicting axes or unsupported uses return errors; exclusions keep them FP32.
+Indirect weights through Reshape/Transpose are skipped. See
+[operator selection and migration](OPERATOR_QUANTIZATION.md).
 
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| `input_path` | str | required | Path to input ONNX model |
-| `output_path` | str | required | Path to save quantized model |
-| `calibration_data` | str or None | None | Path to `.npy` file (shape `[N, ...]`), or None for random samples |
-| `bits` | int | 8 | Bit width: 4 or 8 |
-| `per_channel` | bool | False | Per-channel quantization |
-| `method` | str | "minmax" | Calibration method (see below) |
-| `num_samples` | int | 100 | Number of random samples when `calibration_data` is None |
-| `sample_shape` | list[int] or None | None | Shape of random samples; auto-detected from model if None. Default fallback is `[3, 224, 224]` (CHW image) -- override for non-image inputs. |
-| `native_int4` | bool | False | Store INT4 weights as ONNX `DataType.Int4` (opset 21) |
-| `symmetric` | bool | False | Symmetric quantization (`zero_point == 0`) |
+## Static INT8 Conv activation quantization
 
-**Calibration methods:**
-
-| Method | Description |
-|--------|-------------|
-| `"minmax"` | Uses observed min/max from activations |
-| `"percentile"` | Clips at the 99.9th percentile to reduce outlier sensitivity |
-| `"percentile:NN"` | Clips at the NNth percentile (e.g. `"percentile:95"`); must be in `[0, 100]` |
-| `"entropy"` | Selects range minimizing KL divergence between original and quantized distributions |
-| `"mse"` | Selects range minimizing mean squared error |
-
-**Example:**
+`quantize_with_calibration(input_path, output_path, calibration_data=None,
+bits=8, per_channel=False, method="minmax", num_samples=100, sample_shape=None,
+native_int4=False, symmetric=False, excluded_layers=None, min_elements=0,
+layer_bits=None)`
 
 ```python
-import quantize_rs
-
-# With real calibration data
 quantize_rs.quantize_with_calibration(
-    "resnet18.onnx",
-    "resnet18_int8.onnx",
-    calibration_data="calibration_samples.npy",
-    method="minmax"
-)
-
-# With random samples (auto-detects input shape from model)
-quantize_rs.quantize_with_calibration(
-    "resnet18.onnx",
-    "resnet18_int8.onnx",
-    num_samples=100,
-    sample_shape=[3, 224, 224],
-    method="percentile"
+    "model.onnx", "calibrated.onnx", calibration_data="samples.npy",
+    per_channel=True, symmetric=True, method="minmax",
+    excluded_layers=["sensitive.weight"], min_elements=16,
+    layer_bits={"conv.weight": 8},
 )
 ```
 
----
+This function runs real inference to measure selected Conv activation tensors,
+then inserts activation QuantizeLinear/DequantizeLinear pairs. Conv weights use
+their own ranges. Other operators remain floating point.
 
-### `model_info(input_path)`
+| Parameter | Meaning |
+|-----------|---------|
+| `calibration_data` | Required representative FP32 `.npy` data shaped `[samples,C,H,W]` |
+| `bits` | Must be 8 |
+| `per_channel`, `symmetric` | Weight settings; activations use scalar asymmetric INT8 parameters |
+| `method` | `minmax`, `percentile`, `percentile:NN`, `entropy`, or `mse` |
+| `excluded_layers` | Conv initializer names to exclude |
+| `min_elements` | Skip smaller Conv weights |
+| `layer_bits` | Conv initializer overrides; only 8 supported |
+| `native_int4` | Must be False; use `quantize` for INT4 |
+| `num_samples` | Legacy argument retained for compatibility; unused with data |
+| `sample_shape` | Optional assertion that the supplied dataset has this sample shape |
 
-Returns metadata about an ONNX model.
+Requires opset >= 13 and one fixed FP32 NCHW model input with batch 1. Missing
+calibration data, dynamic/multiple inputs, existing QDQ, custom domains/subgraphs,
+external tensors and unpreserved ONNX sections are rejected. Random fallback has
+been removed. Excluded Conv nodes can still receive a quantized activation from a
+selected upstream Conv. See [the full contract](CALIBRATION.md).
 
-**Parameters:**
+## Preparing data
 
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| `input_path` | str | required | Path to ONNX model |
-
-**Returns:** `ModelInfo` object with the following fields:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | str | Graph name |
-| `version` | int | `model_version` field (often 0) |
-| `opset_version` | int | Default-domain opset version (governs operator compatibility) |
-| `num_nodes` | int | Number of computation nodes |
-| `inputs` | list[str] | Input tensor names |
-| `outputs` | list[str] | Output tensor names |
-
-**Example:**
-
-```python
-info = quantize_rs.model_info("model.onnx")
-print(f"Name: {info.name}")
-print(f"Nodes: {info.num_nodes}")
-print(f"Inputs: {info.inputs}")
-print(f"Outputs: {info.outputs}")
-```
-
-## Preparing calibration data
-
-For best results, use 50-200 representative samples from your validation or training set:
+Use representative preprocessed inputs from the deployment distribution. Each
+sample excludes the batch dimension; save the stacked array as FP32:
 
 ```python
 import numpy as np
-
-# Collect preprocessed samples
-samples = []
-for img in validation_dataset[:100]:
-    preprocessed = preprocess(img)  # your preprocessing pipeline
-    samples.append(preprocessed)
-
-# Save as .npy (shape: [num_samples, channels, height, width])
-calibration_data = np.stack(samples)
-np.save("calibration_samples.npy", calibration_data)
-
-# Use during quantization
-quantize_rs.quantize_with_calibration(
-    "model.onnx",
-    "model_int8.onnx",
-    calibration_data="calibration_samples.npy",
-    method="minmax"
-)
+samples = np.stack([preprocess(image) for image in calibration_images]).astype(np.float32)
+np.save("samples.npy", samples)
 ```
 
-If you do not have calibration data, the function generates random samples. This is adequate for testing but will produce less accurate quantization than real data.
+Measure task accuracy on separate held-out data. There is no guaranteed accuracy
+improvement over weight-only quantization or guaranteed inference speedup.
 
-## ONNX Runtime integration
+## Model information
 
-Quantized models use the standard `DequantizeLinear` operator and load directly in ONNX Runtime:
+`model_info(input_path)` returns `ModelInfo` with `name`, `version`,
+`opset_version`, `num_nodes`, `inputs`, and `outputs`.
+
+```python
+info = quantize_rs.model_info("calibrated.onnx")
+print(info.name, info.opset_version, info.inputs)
+```
+
+## Runtime integration and logging
 
 ```python
 import onnxruntime as ort
-import numpy as np
-
-session = ort.InferenceSession("model_int8.onnx")
-input_name = session.get_inputs()[0].name
-output = session.run(None, {input_name: your_input})
+session = ort.InferenceSession("calibrated.onnx", providers=["CPUExecutionProvider"])
+output = session.run(None, {session.get_inputs()[0].name: your_fp32_batch})
 ```
 
-## Logging
+Both quantization functions release the Python GIL during heavy work. Calls remain
+synchronous; use an executor if invoking them from an asyncio event loop.
 
-quantize-rs routes its warnings (e.g. unpreserved ONNX sections, opset-migration caveats) through Rust's `log` crate, bridged into Python's standard `logging` under loggers named `quantize_rs.*`. Configure or silence them like any other logger:
+Warnings use Python logging via pyo3-log. Configure logger levels before the first
+quantization call. The wheel includes `quantize_rs.pyi` and `py.typed` for editor
+and type-checker support.
 
-```python
-import logging
-logging.getLogger("quantize_rs").setLevel(logging.ERROR)  # silence quantize-rs warnings
+## Verification
+
+After building and installing this checkout's wheel:
+
+```bash
+python eval/calibration_smoke_test.py --binary target/debug/quantize-rs --python
 ```
 
-Set your logging configuration **before the first quantize call** — the bridge caches logger levels, so changes made afterward may not take effect.
-
-## Limitations
-
-- ONNX format only. Export PyTorch/TensorFlow models to ONNX before quantizing.
-- Validated primarily on CNN-style vision models. Activation calibration uses tract for inference; transformer / LLM / RNN architectures may report unsupported ops or shape mismatches in `quantize_with_calibration()`. The plain `quantize()` (weight-only) function does not use tract and works on any FP32 ONNX model.
-- Requires ONNX opset >= 10 for per-tensor quantization, >= 13 for per-channel (automatically upgraded if needed).
-- INT4 values are stored as INT8 bytes by default. Pass `native_int4=True` to write them as ONNX `DataType.Int4` (opset 21) for true 8x compression -- requires an ONNX runtime with opset-21 support.
-- **Per-channel always uses axis 0** (the output-channel dim, as expected by Conv and MatMul weights). Transformer-style linear layers that expect axis=1 per-channel quantization are not yet supported.
-- Single-input models are assumed by random-sample auto shape detection; for multi-input graphs, pass `sample_shape` explicitly or supply real `calibration_data`.
-- External-data models (weights in a sidecar `.onnx.data` file, common above ~2 GB) are not supported — `quantize()` raises with instructions to re-save with weights embedded.
-- A few ONNX sections are not preserved on save (`functions`/local custom ops, `sparse_initializer`, `training_info`); a warning is printed when a loaded model carried them.
-
-> Type stubs (`quantize_rs.pyi`) ship with the wheel, so editors, mypy, and pyright get completion and type checking for the API above.
+On Windows append `.exe` to the binary path. The smoke test covers actual Python
+keyword handling, filters, rejection behavior and ONNX Runtime output accuracy.
 
 ## License
 

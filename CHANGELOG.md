@@ -5,6 +5,97 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - Unreleased
+
+Release candidate scope is frozen to quantization correctness, evaluation and the
+experimental matrix path below. Set the actual release date after verification;
+see [RELEASE_v0.10.0.md](RELEASE_v0.10.0.md) for candidate evidence and open gates.
+
+### Changed
+
+- Model-aware weight quantization now selects direct Conv/MatMul/Gemm input-1
+  initializers. Per-channel axes follow Conv output channels, MatMul's last weight
+  dimension and Gemm `transB`. CLI/Python argument lists are unchanged; unrelated
+  initializers and indirect weights remain FP32. Conflicting shared uses fail
+  before saving. See [OPERATOR_QUANTIZATION.md](OPERATOR_QUANTIZATION.md).
+- **Behavioral migration:** `calibrate` and Python `quantize_with_calibration`
+  now perform real static INT8 activation QDQ for selected Conv layers. They
+  require representative finite calibration data, opset >= 13 and one fixed
+  FP32 NCHW input with batch 1. INT4/mixed precision, native INT4, unsupported
+  model layouts and random-data fallback are rejected. Other operators stay FP32.
+- **Deprecated:** `Quantizer::with_calibration`. Quantization calls on legacy
+  instances return `UnsupportedConfig` rather than applying activation ranges to
+  weights or silently ignoring statistics. Use `Quantizer::new` or `quantize_static`.
+- `ActivationEstimator` statistics identify original ONNX tensor names, including
+  inputs; output identities are resolved before tract optimization.
+- Existing public field sets on `QuantConfig` and `QdqWeightInput` are frozen for
+  v1.x. `Default` does not make field additions semver-compatible. Future options
+  require separate types/methods or a major release.
+
+### Added
+
+- Experimental `quantize_static_matrix`, `matrix_calibration_sample_shape` and
+  `calibrate-matrix` CLI for fixed FP32 `[1,K]` MatMul/Gemm activation QDQ.
+  Requires symmetric per-channel INT8 weights, direct rank-2 initializers and
+  restricted feed-forward graphs. Conv and Python calibration contracts remain
+  unchanged. See [MATRIX_CALIBRATION.md](MATRIX_CALIBRATION.md).
+- Matrix calibration regressions and ORT numerical/integer-kernel checks in CI
+  and release verification, including explicit reporting of fan-out fusion limits.
+- Reproducible GPT-2 INT8 evaluation with checksum-pinned WikiText-2/tokenizer
+  inputs, complete initializer coverage verified against Rust output, strided
+  perplexity, separate-process latency/RSS and executed ORT kernel profiles.
+  The [bounded result](eval/GPT2_EVALUATION.md) passes the predeclared quality gate
+  but is slower than FP32; no integer Transformer execution is claimed.
+- Offline coverage/perplexity regressions in CI and release verification, plus
+  an optional pinned-checkpoint check for the local GPT-2 ONNX export.
+- `SelectedWeight`, `OnnxModel::select_weights`,
+  `Quantizer::quantize_selected_weights`, explicit-axis tensor construction and
+  axis getters. Existing public struct fields and axis-0 constructors remain intact.
+- Rust axis/selection regressions and an ONNX Runtime/Python MatMul/Gemm suite,
+  including transpose combinations, batching, INT4 and output-file preservation.
+- `OnnxModel::try_load_quantized_info` returns typed errors for malformed QDQ
+  dimensions and scale/zero-point payload lengths. CLI validation and benchmark
+  reports use it; the existing infallible method logs and returns an empty list
+  on malformed metadata without allocating shape-sized fallback vectors.
+- Reproducible labeled CNN evaluation in `eval/cnn_evaluation.py`, including a
+  checksum-pinned MNIST model/dataset, disjoint training/test splits, FP32/Conv
+  weight INT8/calibrated INT8 comparisons, latency, process RSS and runtime
+  optimization parity. CI gates accuracy, not machine-dependent performance.
+- Public `quantize_static` pipeline and `OnnxModel::calibration_sample_shape`.
+- Python calibration `excluded_layers`, `min_elements` and `layer_bits` arguments,
+  appended to preserve existing positional argument locations. Only INT8 overrides
+  are supported by activation calibration; weight-only mixed precision is unchanged.
+- Real tract regression tests plus an ONNX Runtime calibration smoke suite covering
+  held-out synthetic accuracy, optimization parity, CLI reports and Python behavior.
+- [CALIBRATION.md](CALIBRATION.md): supported scope, migration and validation limits.
+
+### Fixed
+
+- Python package license metadata now matches the repository's MIT license.
+- Source distributions include Python type information needed by rebuilt wheels;
+  obsolete maturin configuration pointing to a nonexistent `python/` is removed.
+- Release validation can run manually without publishing; it inspects archives,
+  imports native wheels and rebuilds/installs the source distribution. Cargo.lock is retained
+  for reproducible CLI, wheel and release verification builds.
+- Dataset shape, total element count and allocation byte capacities use checked
+  arithmetic. Empty/zero-dimensional samples, overflow and invalid random ranges
+  return calibration errors. Safetensors input also builds without tract enabled.
+- Activation sums, running means and second moments use f64 internally while
+  preserving f32 getters. Regressions cover large batches, extreme finite values
+  and partition-independent mean/standard deviation within numerical tolerance.
+- Weight ranges are always weight-derived; activation ranges are used exclusively
+  for activation QDQ, with FP32 scalar scales and INT8 scalar zero points.
+- Shared Conv input QDQ is reused, graph output names are preserved, activation
+  names avoid collisions and unsupported cases preserve existing output files.
+- Quantization constructor and graph-save shape products now use checked arithmetic.
+- CLI validation/benchmark node accounting includes activation QuantizeLinear nodes.
+- Removed stale release-preparation instructions and unsupported accuracy/semver
+  claims from current documentation. Historical entries below describe their
+  releases and may contain claims superseded by this correction.
+
+No release tag or registry publication is included. See [ROADMAP.md](ROADMAP.md)
+for the representative real-model evaluation still required before v1.0.
+
 ## [0.9.0] - 2026-06-06
 
 This release is the pre-1.0 hardening pass: every change targets correctness,

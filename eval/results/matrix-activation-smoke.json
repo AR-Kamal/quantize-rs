@@ -1,0 +1,223 @@
+{
+  "onnx": "1.20.1",
+  "onnxruntime": "1.22.1",
+  "numpy": "2.4.2",
+  "provider": "CPUExecutionProvider",
+  "binary_sha256": "683a7b4bf16e4e723dcb76ab2246ffe1eaa198543352133531889cb70ef3de38",
+  "seed": 917,
+  "calibration_samples": 256,
+  "held_out_samples": 32,
+  "maximum_relative_rmse": 0.05,
+  "cases": {
+    "matmul/transA=0/transB=0/minmax": {
+      "relative_rmse": 0.016953319311141968,
+      "maximum_parity_error_in_output_steps": 0.0,
+      "executed_integer_kernels": {
+        "QLinearMatMul": 1
+      },
+      "executed_float_matrix_kernels": {},
+      "fusion_required": true,
+      "profiled_activation_types": [
+        [
+          "uint8"
+        ]
+      ],
+      "source_sha256": "ab5e9251a15ec0b6662c3908ea201dc5e4b3cfa23a82977190309d49de36e648",
+      "output_sha256": "e3da63983135fac74eec02f9300d4df7339200b085bf7bf7b64ebe53d8a60ddf"
+    },
+    "matmul/transA=0/transB=0/percentile:99.9": {
+      "relative_rmse": 0.016552919521927834,
+      "maximum_parity_error_in_output_steps": 0.0,
+      "executed_integer_kernels": {
+        "QLinearMatMul": 1
+      },
+      "executed_float_matrix_kernels": {},
+      "fusion_required": true,
+      "profiled_activation_types": [
+        [
+          "uint8"
+        ]
+      ],
+      "source_sha256": "ab5e9251a15ec0b6662c3908ea201dc5e4b3cfa23a82977190309d49de36e648",
+      "output_sha256": "4113f271e0ddc3f2d8c46c53d0c490e725ade651d9b565166453fbb7751d654d"
+    },
+    "matmul/transA=0/transB=0/entropy": {
+      "relative_rmse": 0.01763199083507061,
+      "maximum_parity_error_in_output_steps": 0.0,
+      "executed_integer_kernels": {
+        "QLinearMatMul": 1
+      },
+      "executed_float_matrix_kernels": {},
+      "fusion_required": true,
+      "profiled_activation_types": [
+        [
+          "uint8"
+        ]
+      ],
+      "source_sha256": "ab5e9251a15ec0b6662c3908ea201dc5e4b3cfa23a82977190309d49de36e648",
+      "output_sha256": "87db6ffdc4ed875fe80e607f6bebb270455175dbd2369579743571cf62a5e956"
+    },
+    "matmul/transA=0/transB=0/mse": {
+      "relative_rmse": 0.01763199083507061,
+      "maximum_parity_error_in_output_steps": 0.0,
+      "executed_integer_kernels": {
+        "QLinearMatMul": 1
+      },
+      "executed_float_matrix_kernels": {},
+      "fusion_required": true,
+      "profiled_activation_types": [
+        [
+          "uint8"
+        ]
+      ],
+      "source_sha256": "ab5e9251a15ec0b6662c3908ea201dc5e4b3cfa23a82977190309d49de36e648",
+      "output_sha256": "87db6ffdc4ed875fe80e607f6bebb270455175dbd2369579743571cf62a5e956"
+    },
+    "chain/transA=0/transB=0/minmax": {
+      "relative_rmse": 0.03144386410713196,
+      "maximum_parity_error_in_output_steps": 0.0,
+      "executed_integer_kernels": {
+        "QLinearMatMul": 1,
+        "QGemm": 1
+      },
+      "executed_float_matrix_kernels": {},
+      "fusion_required": true,
+      "profiled_activation_types": [
+        [
+          "uint8"
+        ],
+        [
+          "uint8"
+        ]
+      ],
+      "source_sha256": "0df28f1e932336468eb5b1551e1b6594be280bdb0dd4b03a96abcdc023dc2961",
+      "output_sha256": "837cd4ee12087687a76c016c76337ffef24507fa0705b4fdd0ce676af24c8abb"
+    },
+    "adjacent/transA=0/transB=0/minmax": {
+      "relative_rmse": 0.02300574630498886,
+      "maximum_parity_error_in_output_steps": 0.0,
+      "executed_integer_kernels": {
+        "QLinearMatMul": 1,
+        "QGemm": 1
+      },
+      "executed_float_matrix_kernels": {},
+      "fusion_required": true,
+      "profiled_activation_types": [
+        [
+          "uint8"
+        ],
+        [
+          "uint8"
+        ]
+      ],
+      "source_sha256": "e895ced75acfa7e3f25e973eb4f44df5d4ad214b05db348cfb246d973beac98d",
+      "output_sha256": "2aba3b65eea874945a5c44a0429c59b434f41058ff27370c5151437bf0f7bbf6"
+    },
+    "shared/transA=0/transB=0/minmax": {
+      "relative_rmse": 0.016953319311141968,
+      "maximum_parity_error_in_output_steps": 0.0,
+      "executed_integer_kernels": {},
+      "executed_float_matrix_kernels": {
+        "Gemm": 1,
+        "MatMul": 1
+      },
+      "fusion_required": false,
+      "profiled_activation_types": [],
+      "source_sha256": "50344a5d468e232f22b21b16381e54780fe5f0b0288f45c961d36c438f254852",
+      "output_sha256": "1607463d346cd5f05312bd2821afded25709ad4c2710042d416a77d9e3b547db"
+    },
+    "fanout/transA=0/transB=0/minmax": {
+      "relative_rmse": 0.01695331372320652,
+      "maximum_parity_error_in_output_steps": 0.0,
+      "executed_integer_kernels": {},
+      "executed_float_matrix_kernels": {
+        "Gemm": 1,
+        "MatMul": 1
+      },
+      "fusion_required": false,
+      "profiled_activation_types": [],
+      "source_sha256": "cb20d7d7e89efabb9b3c071fc92cc90232fb53f0f5e38c50db48729470239d2f",
+      "output_sha256": "094cf4bc6c1585cc30e9b94edf5dc923c2dc7568e5c381272f8a88a27d100892"
+    },
+    "gemm_no_bias/transA=0/transB=0/minmax": {
+      "relative_rmse": 0.016953319311141968,
+      "maximum_parity_error_in_output_steps": 0.0,
+      "executed_integer_kernels": {
+        "QGemm": 1
+      },
+      "executed_float_matrix_kernels": {},
+      "fusion_required": true,
+      "profiled_activation_types": [
+        [
+          "uint8"
+        ]
+      ],
+      "source_sha256": "0267bd6e4d8e0b848fffd109febbfe85d98758d086b0b489a2415e94fea47314",
+      "output_sha256": "e96582152f5595a8d28a0acdf9319534fafb4785f1316c7f191b0908c2bc727c"
+    },
+    "gemm_bias/transA=0/transB=0/minmax": {
+      "relative_rmse": 0.01696990616619587,
+      "maximum_parity_error_in_output_steps": 0.0,
+      "executed_integer_kernels": {
+        "QGemm": 1
+      },
+      "executed_float_matrix_kernels": {},
+      "fusion_required": true,
+      "profiled_activation_types": [
+        [
+          "uint8"
+        ]
+      ],
+      "source_sha256": "2d4e4ab9c6772c97713bdc132505f49427a5886f39f6cdac576b86b1eb9c7eeb",
+      "output_sha256": "ac070ae404e4e75f4822edb1f76fc50449656bb2d67d6ba68665d7175cce2554"
+    },
+    "gemm_bias/transA=0/transB=1/minmax": {
+      "relative_rmse": 0.01696990616619587,
+      "maximum_parity_error_in_output_steps": 0.0,
+      "executed_integer_kernels": {
+        "QGemm": 1
+      },
+      "executed_float_matrix_kernels": {},
+      "fusion_required": true,
+      "profiled_activation_types": [
+        [
+          "uint8"
+        ]
+      ],
+      "source_sha256": "a6335e08bc7fdac5d81c33bf7eb83b618a82990f7fe0513b2209a0807dcf41c0",
+      "output_sha256": "2e55148605c56b17b12da92256a00fb9740145861e43b86b3de59f6c2eccafc0"
+    },
+    "gemm_bias/transA=1/transB=0/minmax": {
+      "relative_rmse": 0.0124916210770607,
+      "maximum_parity_error_in_output_steps": 1.0000013049050773,
+      "executed_integer_kernels": {
+        "QGemm": 1
+      },
+      "executed_float_matrix_kernels": {},
+      "fusion_required": true,
+      "profiled_activation_types": [
+        [
+          "uint8"
+        ]
+      ],
+      "source_sha256": "b4fc8bf790d8a059fd44d3c191bf876f929b6c5c15576e3eccabe8752d3c4119",
+      "output_sha256": "39f8b0340d2c826d6b9d6110a1f8aceaaceb8dc71ea98af7d91f0bd73c2ca4ba"
+    },
+    "gemm_bias/transA=1/transB=1/minmax": {
+      "relative_rmse": 0.0124916210770607,
+      "maximum_parity_error_in_output_steps": 1.0000013049050773,
+      "executed_integer_kernels": {
+        "QGemm": 1
+      },
+      "executed_float_matrix_kernels": {},
+      "fusion_required": true,
+      "profiled_activation_types": [
+        [
+          "uint8"
+        ]
+      ],
+      "source_sha256": "9071fd692d6e8bff3ca799e924e564d4fbea5020a39529ec762a2e5e9b14a39b",
+      "output_sha256": "35755c3ecdc0e722ff4e1d59b80f3a1251427d86686d4f88f45b2c4bdb1eae3a"
+    }
+  }
+}

@@ -83,21 +83,18 @@ fn main() -> anyhow::Result<()> {
     println!("  file size: {}", fmt_bytes(file_bytes));
 
     // ------------------------------------------------------------------
-    // Extract weights
+    // Select weights and infer axes
     // ------------------------------------------------------------------
-    let weights = model.extract_weights();
+    let config = QuantConfig {
+        bits: args.bits,
+        per_channel: args.per_channel,
+        min_elements: args.min_elements,
+        ..Default::default()
+    };
+    let weights = model.select_weights(&config)?;
     println!(
-        "\nFound {} weight tensors ({} will be quantized, {} skipped by min_elements={})\n",
-        weights.len(),
-        weights
-            .iter()
-            .filter(|w| w.data.len() >= args.min_elements)
-            .count(),
-        weights
-            .iter()
-            .filter(|w| w.data.len() < args.min_elements)
-            .count(),
-        args.min_elements,
+        "\nSelected {} direct Conv/MatMul/Gemm weights after filtering\n",
+        weights.len()
     );
 
     // INT4 values are stored in INT8 containers in ONNX (DequantizeLinear
@@ -110,20 +107,14 @@ fn main() -> anyhow::Result<()> {
     let onnx_col = if int4_mode { "ONNX bytes" } else { "Quantized" };
     println!(
         "{:<40}  {:>10}  {:>10}  {:>10}  {:>10}  {:>8}",
-        "Tensor name", "Elements", "FP32", onnx_col, "MAE", "Bits"
+        "Tensor name", "Elements", "FP32", onnx_col, "MSE", "Bits"
     );
     println!("{}", "-".repeat(100));
 
     // ------------------------------------------------------------------
     // Quantize each weight and collect metrics
     // ------------------------------------------------------------------
-    let config = QuantConfig {
-        bits: args.bits,
-        per_channel: args.per_channel,
-        min_elements: args.min_elements,
-        ..Default::default()
-    };
-    let quantizer = Quantizer::new(config.clone());
+    let quantizer = Quantizer::new(config);
 
     let mut qdq_data: Vec<QdqWeightInput> = Vec::new();
     let mut total_fp32_bytes: usize = 0;
@@ -132,34 +123,19 @@ fn main() -> anyhow::Result<()> {
     // Theoretical minimum if values were bit-packed (ceil(n/2) for INT4, n for INT8).
     let mut total_packed_bytes: usize = 0;
     let mut total_elements: usize = 0;
-    let mut skipped: usize = 0;
-
-    for w in &weights {
+    let outputs = quantizer.quantize_selected_weights(&weights)?;
+    for (selection, output) in weights.iter().zip(outputs) {
+        let w = selection.weight();
         let fp32_bytes = w.data.len() * 4;
         total_fp32_bytes += fp32_bytes;
         total_elements += w.data.len();
 
-        if !config.should_quantize(&w.name, w.data.len()) {
-            println!(
-                "{:<40}  {:>10}  {:>10}  {:>10}  {:>10}  {:>8}",
-                truncate(&w.name, 40),
-                fmt_count(w.data.len()),
-                fmt_bytes(fp32_bytes),
-                "skipped",
-                "-",
-                "-",
-            );
-            skipped += 1;
-            continue;
-        }
-
-        let quantized = quantizer.quantize_tensor(&w.data, w.shape.clone())?;
         // Actual ONNX storage: one INT8 byte per element regardless of bit width.
         let onnx_bytes = w.data.len();
         // Theoretical packed size (ceil(n/2) for INT4, n for INT8).
-        let packed_bytes = quantized.size_bytes();
-        let mae = quantized.quantization_error(&w.data);
-        let bits_used = quantized.bits();
+        let packed_bytes = output.quantized_size_bytes;
+        let mse = output.mse;
+        let bits_used = output.qdq.bits;
 
         println!(
             "{:<40}  {:>10}  {:>10}  {:>10}  {:>10.2e}  {:>8}",
@@ -167,20 +143,11 @@ fn main() -> anyhow::Result<()> {
             fmt_count(w.data.len()),
             fmt_bytes(fp32_bytes),
             fmt_bytes(onnx_bytes),
-            mae,
+            mse,
             bits_used,
         );
 
-        let (scales, zero_points) = quantized.get_all_scales_zero_points();
-        let is_pc = quantized.is_per_channel();
-        qdq_data.push(QdqWeightInput {
-            original_name: w.name.clone(),
-            quantized_values: quantized.data(),
-            scales,
-            zero_points,
-            bits: bits_used,
-            axis: if is_pc { Some(0) } else { None },
-        });
+        qdq_data.push(output.qdq);
 
         total_onnx_bytes += onnx_bytes;
         total_packed_bytes += packed_bytes;
@@ -192,10 +159,9 @@ fn main() -> anyhow::Result<()> {
     println!("{}", "-".repeat(100));
     println!("\nSummary");
     println!(
-        "  Total tensors : {} ({} quantized, {} skipped)",
+        "  Selected tensors: {} ({} quantized)",
         weights.len(),
-        qdq_data.len(),
-        skipped
+        qdq_data.len()
     );
     println!("  Total elements: {}", fmt_count(total_elements));
     println!("  FP32 weight bytes    : {}", fmt_bytes(total_fp32_bytes));

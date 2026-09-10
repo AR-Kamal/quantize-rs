@@ -21,38 +21,18 @@ fn main() -> Result<()> {
     println!("  Nodes: {}", info.num_nodes);
     println!();
 
-    println!("Extracting weights...");
-    let weights = model.extract_weights();
-    println!("✓ Found {} weight tensors\n", weights.len());
-
-    let config = QuantConfig::int8();
-    let quantizer = Quantizer::new(config);
-
-    println!("Quantizing...");
-    let mut quantized_data = Vec::new();
-    let mut total_error = 0.0;
-
-    for weight in &weights {
-        let quantized = quantizer.quantize_tensor(&weight.data, weight.shape.clone())?;
-        let error = quantized.quantization_error(&weight.data);
-        total_error += error;
-
-        let (scales, zero_points) = quantized.get_all_scales_zero_points();
-        let is_per_channel = quantized.is_per_channel();
-
-        quantized_data.push(QdqWeightInput {
-            original_name: weight.name.clone(),
-            quantized_values: quantized.data(),
-            scales,
-            zero_points,
-            bits: quantized.bits(),
-            axis: if is_per_channel { Some(0) } else { None },
-        });
-    }
-
-    let avg_error = total_error / weights.len() as f32;
-    println!("✓ Quantized {} tensors", weights.len());
-    println!("  Average MSE: {:.6}\n", avg_error);
+    let config = QuantConfig::int8()
+        .with_per_channel(true)
+        .with_symmetric(true);
+    let outputs = Quantizer::new(config).quantize_model(&model)?;
+    anyhow::ensure!(!outputs.is_empty(), "No eligible Conv/MatMul/Gemm weights");
+    let avg_error = outputs.iter().map(|o| o.mse).sum::<f32>() / outputs.len() as f32;
+    println!(
+        "Quantized {} tensors; average MSE: {:.6}",
+        outputs.len(),
+        avg_error
+    );
+    let quantized_data: Vec<QdqWeightInput> = outputs.into_iter().map(|o| o.qdq).collect();
 
     let output_path = "mnist_quantized.onnx";
     println!("Saving to: {}", output_path);

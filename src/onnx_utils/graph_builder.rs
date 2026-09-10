@@ -24,10 +24,9 @@ use super::quantization_nodes::{
 
 /// One weight to convert: FP32 initializer → INT8 + DequantizeLinear block.
 ///
-/// Fields are public for ergonomic construction in callers; new fields are
-/// added only on a minor version bump and downstream `..Default::default()`
-/// callers continue to compile.  Always construct via
-/// `QdqWeightInput { /* fields */, ..Default::default() }`.
+/// The existing public fields are frozen for v1.x. `Default` supports convenient
+/// construction but does not make adding fields compatible with exhaustive
+/// downstream literals. Future extensions use separate types or a major release.
 #[derive(Debug, Clone, Default)]
 pub struct QdqWeightInput {
     /// Original initializer name (e.g., `"conv1.weight"`)
@@ -513,7 +512,12 @@ pub(crate) fn apply_qdq_transform_with_options(
                     ),
                 })?;
 
-        let expected_len: i64 = shape.iter().product();
+        let expected_len = shape
+            .iter()
+            .try_fold(1i64, |n, d| n.checked_mul(*d))
+            .ok_or_else(|| QuantizeError::GraphTransform {
+                reason: "tensor shape overflows i64".into(),
+            })?;
         if inp.quantized_values.len() as i64 != expected_len {
             return Err(QuantizeError::GraphTransform {
                 reason: format!(

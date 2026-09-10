@@ -10,7 +10,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 #[cfg(feature = "calibration")]
-use crate::calibration::{methods::CalibrationMethod, ActivationEstimator, CalibrationDataset};
+use crate::calibration::{methods::CalibrationMethod, CalibrationDataset};
 use crate::onnx_utils::graph_builder::QdqWeightInput;
 use crate::onnx_utils::{OnnxModel, SaveOptions};
 use crate::quantization::{QuantConfig, Quantizer};
@@ -47,9 +47,8 @@ struct ModelInfo {
 ///     input_path: Path to input ONNX model
 ///     output_path: Path to save quantized model
 ///     bits: Bit width (4 or 8)
-///     per_channel: Enable per-channel quantization (always axis 0, the
-///         output-channel dim — Conv/MatMul-friendly; Transformer-style
-///         linear layers expecting axis=1 are not yet supported)
+///     per_channel: Select output-channel axes from graph usage: Conv axis 0,
+///         MatMul last weight dimension, Gemm axis 1 (axis 0 for transB=1)
 ///     excluded_layers: Layer names to skip (exact match on initializer name)
 ///     min_elements: Skip tensors with fewer elements than this (0 = no minimum)
 ///     layer_bits: Per-layer bit-width overrides, e.g. {"conv1.weight": 4}
@@ -84,37 +83,11 @@ fn quantize(
     }
 
     // Release the GIL for the duration of the I/O- and CPU-heavy work so
-    // other Python threads (and asyncio tasks) can run.  Quantizer internally
+    // other Python threads can run.  Quantizer internally
     // uses rayon for parallel weight quantization.
     py.allow_threads(|| -> PyResult<()> {
         let mut model = OnnxModel::load(input_path)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to load model: {}", e)))?;
-
-        // Extract once and reuse: the empty-check, and the quantizer below, both
-        // need the weights — decoding them twice doubles the f32 conversion cost.
-        let weights = model.extract_weights();
-        if weights.is_empty() {
-            let external = model.count_external_data_initializers();
-            let non_fp32 = model.count_non_fp32_weight_initializers();
-            return Err(PyRuntimeError::new_err(if external > 0 {
-                format!(
-                    "no inline FP32 weight tensors found: {} initializer(s) store their data in \
-                     an external file (ONNX external-data format); quantize-rs reads only inline \
-                     tensors — re-save with weights embedded (onnx.load(path, \
-                     load_external_data=True) then onnx.save without external data) and retry",
-                    external
-                )
-            } else if non_fp32 > 0 {
-                format!(
-                    "no FP32 weight tensors found, but the model has {} non-FP32 \
-                     weight-shaped initializer(s) (FP16/BF16/Double); quantize-rs \
-                     supports only FP32 input — convert the model to FP32 first",
-                    non_fp32
-                )
-            } else {
-                "no weight tensors found — model may be empty or already quantized".to_string()
-            }));
-        }
 
         let config = QuantConfig {
             bits,
@@ -126,8 +99,16 @@ fn quantize(
             layer_bits: layer_bits.unwrap_or_default(),
         };
 
+        let weights = model.select_weights(&config)
+            .map_err(|e| PyRuntimeError::new_err(format!("Weight selection failed: {e}")))?;
+        if weights.is_empty() {
+            return Err(PyRuntimeError::new_err(
+                "no eligible direct Conv/MatMul/Gemm weights remain after excluded_layers / min_elements; only inline FP32 matrix/tensor weights are supported"
+            ));
+        }
+
         let outputs = Quantizer::new(config)
-            .quantize_weights(&weights)
+            .quantize_selected_weights(&weights)
             .map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
 
         if outputs.is_empty() {
@@ -148,47 +129,21 @@ fn quantize(
     })
 }
 
-/// Activation-based calibration quantization.
+/// Static INT8 activation quantization for selected Conv layers.
 ///
-/// Args:
-///     input_path: Path to input ONNX model
-///     output_path: Path to save quantized model
-///     calibration_data: Path to .npy calibration data, or None for random samples
-///     bits: Bit width (4 or 8)
-///     per_channel: Enable per-channel quantization (always axis 0 — see
-///         `quantize` for the axis caveat)
-///     method: Calibration method ("minmax", "percentile", "percentile:NN",
-///         "entropy", "mse")
-///     num_samples: Number of random samples if calibration_data is None
-///     sample_shape: Shape of random samples (e.g., [3, 224, 224])
-///     native_int4: If True, store INT4 weights as native ONNX DataType.Int4
-///         (opset 21) — 2× smaller on disk but requires an ORT build with
-///         opset 21 support.  Has no effect on INT8-only models.  Default False.
-///     symmetric: If True, force zero_point == 0 (symmetric quantization).
-///         Required by most ONNX Runtime / TensorRT INT8 matmul kernels for
-///         per-channel weight quantization.  Default False.
-///
-/// Example:
-///     >>> import quantize_rs
-///     >>> quantize_rs.quantize_with_calibration(
-///     ...     "resnet18.onnx",
-///     ...     "resnet18_int8.onnx",
-///     ...     calibration_data="samples.npy",
-///     ...     method="minmax"
-///     ... )
+/// Requires representative calibration_data (.npy), opset >= 13, and one fixed
+/// FP32 NCHW input with batch 1. Weight ranges remain weight-derived; activation
+/// ranges produce real QDQ pairs. Other operators stay floating point.
+/// excluded_layers and min_elements select Conv weights. layer_bits accepts
+/// only 8 in this path. INT4/native_int4 and random calibration are rejected.
+/// num_samples is retained for signature compatibility but unused with data.
+/// sample_shape, when supplied, must match the supplied dataset.
 #[cfg(feature = "calibration")]
 #[pyfunction]
 #[pyo3(signature = (
-    input_path,
-    output_path,
-    calibration_data=None,
-    bits=8,
-    per_channel=false,
-    method="minmax",
-    num_samples=100,
-    sample_shape=None,
-    native_int4=false,
-    symmetric=false,
+    input_path, output_path, calibration_data=None, bits=8, per_channel=false,
+    method="minmax", num_samples=100, sample_shape=None, native_int4=false,
+    symmetric=false, excluded_layers=None, min_elements=0, layer_bits=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn quantize_with_calibration(
@@ -203,101 +158,41 @@ fn quantize_with_calibration(
     sample_shape: Option<Vec<usize>>,
     native_int4: bool,
     symmetric: bool,
+    excluded_layers: Option<Vec<String>>,
+    min_elements: usize,
+    layer_bits: Option<std::collections::HashMap<String, u8>>,
 ) -> PyResult<()> {
-    if bits != 4 && bits != 8 {
-        return Err(PyValueError::new_err(format!(
-            "bits must be 4 or 8, got {}",
-            bits
-        )));
+    let _ = num_samples;
+    let layer_bits = layer_bits.unwrap_or_default();
+    if native_int4 || bits != 8 || layer_bits.values().any(|b| *b != 8) {
+        return Err(PyValueError::new_err("static activation quantization supports INT8 only; use quantize for INT4 or mixed precision"));
     }
-
-    // Parse the method on the GIL-holding thread (it's a string parse — trivial).
-    let calib_method: CalibrationMethod = method
+    let data_path = calibration_data.ok_or_else(|| PyValueError::new_err("representative calibration_data (.npy) is required; random calibration has been removed"))?;
+    let method: CalibrationMethod = method
         .parse()
-        .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))?;
-
-    // Release the GIL for the duration of the I/O- and CPU-heavy work
-    // (model load, tract inference, parallel quantize, save).  Other Python
-    // threads (and asyncio tasks) can run concurrently while calibration
-    // crunches numbers in Rust.
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
     py.allow_threads(|| -> PyResult<()> {
-        let model = OnnxModel::load(input_path)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to load model: {}", e)))?;
-
-        let dataset = if let Some(path) = calibration_data {
-            CalibrationDataset::from_numpy(path).map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to load calibration data: {}", e))
-            })?
-        } else {
-            let shape = if let Some(s) = sample_shape {
-                s
-            } else {
-                model
-                    .input_shapes()
-                    .into_iter()
-                    .next()
-                    .and_then(|dims| {
-                        // Strip the batch slot (first dim) BEFORE filtering
-                        // out symbolic / non-positive dims.  See the matching
-                        // comment in src/cli/commands.rs::calibrate.
-                        let sample_dims: &[i64] = if dims.len() >= 2 { &dims[1..] } else { &dims };
-                        let shape: Vec<usize> = sample_dims
-                            .iter()
-                            .filter_map(|&d| if d > 0 { Some(d as usize) } else { None })
-                            .collect();
-                        if shape.is_empty() {
-                            None
-                        } else {
-                            Some(shape)
-                        }
-                    })
-                    .unwrap_or_else(|| vec![3, 224, 224])
-            };
-
-            CalibrationDataset::random(shape, num_samples, (0.0, 1.0)).map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to create random dataset: {}", e))
-            })?
-        };
-
-        let mut estimator = ActivationEstimator::new(model, input_path)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create estimator: {}", e)))?;
-
-        estimator
-            .calibrate_quiet(&dataset)
-            .map_err(|e| PyRuntimeError::new_err(format!("Calibration failed: {}", e)))?;
-
-        let activation_stats: std::collections::HashMap<String, _> = estimator
-            .get_layer_stats()
-            .into_iter()
-            .map(|(k, v)| (k, v.clone()))
-            .collect();
-        let mut model = estimator.into_model();
-
+        let dataset = CalibrationDataset::from_numpy(data_path)
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+        if sample_shape
+            .as_ref()
+            .is_some_and(|shape| shape != &dataset.shape)
+        {
+            return Err(PyValueError::new_err(
+                "sample_shape does not match calibration_data",
+            ));
+        }
         let config = QuantConfig {
             bits,
             per_channel,
             symmetric,
-            calibration_method: Some(calib_method),
-            ..Default::default()
+            calibration_method: Some(method),
+            excluded_layers: excluded_layers.unwrap_or_default(),
+            min_elements,
+            layer_bits,
         };
-
-        let outputs = Quantizer::with_calibration(config, activation_stats)
-            .quantize_model(&model)
-            .map_err(|e| PyRuntimeError::new_err(format!("Quantization failed: {}", e)))?;
-        if outputs.is_empty() {
-            return Err(PyRuntimeError::new_err(
-                "all weight tensors were filtered out by excluded_layers / min_elements / \
-                 layer_bits; nothing to quantize",
-            ));
-        }
-        let quantized_data: Vec<QdqWeightInput> = outputs.into_iter().map(|o| o.qdq).collect();
-
-        let save_options = SaveOptions::default().with_native_int4(native_int4);
-        model
-            .save_quantized_with_options(&quantized_data, output_path, save_options)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to save model: {}", e)))?;
-
-        Ok(())
+        crate::quantize_static(input_path, output_path, &dataset, config)
+            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     })
 }
 

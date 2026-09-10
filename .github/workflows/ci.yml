@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [master, main]
   pull_request:
@@ -22,11 +23,11 @@ jobs:
       # Run tests with default features and with --all-features so the
       # mmap and safetensors-input code paths are exercised in CI.
       - name: Run tests (default features)
-        run: cargo test --all
+        run: cargo test --locked --all
       - name: Run tests (all features)
-        run: cargo test --all-features --all
+        run: cargo test --locked --all-features --all
       - name: Run tests (no default features, lib only)
-        run: cargo test --no-default-features --lib
+        run: cargo test --locked --no-default-features --lib
 
   # Verify the crate still compiles on its declared MSRV (Cargo.toml `rust-version`).
   # The toolchain is read FROM Cargo.toml so the declared MSRV and the version
@@ -67,7 +68,7 @@ jobs:
       # Runs on all three OSes so platform-specific code paths (atomic
       # save's std::fs::rename, Windows path handling, mmap) get linted.
       - name: Clippy (all features, all targets)
-        run: cargo clippy --all-features --all-targets -- -D warnings
+        run: cargo clippy --locked --all-features --all-targets -- -D warnings
 
   fmt:
     runs-on: ubuntu-latest
@@ -90,7 +91,7 @@ jobs:
       - name: Build docs (deny warnings)
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --locked --no-deps --all-features
 
   bench-compile:
     runs-on: ubuntu-latest
@@ -99,7 +100,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Verify benchmarks compile
-        run: cargo bench --all-features --no-run
+        run: cargo bench --locked --all-features --no-run
 
   ort-smoke:
     # End-to-end check that quantized models actually load and run in ONNX
@@ -115,8 +116,27 @@ jobs:
       - name: Build quantize-rs binary
         # Debug build — the smoke test only needs the binary to run, not to be
         # fast, and a debug build avoids the slow release LTO step.
-        run: cargo build --bin quantize-rs
+        run: cargo build --locked --bin quantize-rs
       - name: Install ONNX Runtime
-        run: python -m pip install --upgrade pip onnx onnxruntime numpy
+        run: python -m pip install --upgrade pip onnx onnxruntime numpy psutil
       - name: ORT execution smoke test
         run: python eval/ort_smoke_test.py --binary ./target/debug/quantize-rs
+      - name: GPT-2 evaluation math and coverage regressions (offline)
+        run: python -m unittest discover -s eval -p test_gpt2_evaluation.py -v
+      - name: Build and install Python wheel for runtime checks
+        run: |
+          python -m pip install maturin
+          maturin build --locked --features python
+          python -m pip install --force-reinstall --no-deps target/wheels/*.whl
+      - name: Operator selection, quantization axes and Python API checks
+        run: python eval/operator_axes_smoke_test.py --binary ./target/debug/quantize-rs --python
+      - name: Static calibration and Python API execution checks
+        run: python eval/calibration_smoke_test.py --binary ./target/debug/quantize-rs --python
+      - name: Matrix activation accuracy and integer-kernel execution
+        run: python eval/matrix_calibration_smoke_test.py --binary ./target/debug/quantize-rs --report target/matrix-activation-smoke.json
+      - name: Labeled MNIST calibration accuracy gate
+        run: python eval/cnn_evaluation.py --mnist --download --binary ./target/debug/quantize-rs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mnist-calibration-evaluation
+          path: target/cnn-evaluation/report.json

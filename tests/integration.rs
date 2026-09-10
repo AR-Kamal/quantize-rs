@@ -4,7 +4,6 @@
 //! the repo) and exercise the full quantization pipeline.
 
 use prost::Message;
-use quantize_rs::calibration::methods::CalibrationMethod;
 use quantize_rs::calibration::stats::ActivationStats;
 use quantize_rs::onnx_proto::{
     tensor_proto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorProto,
@@ -54,6 +53,58 @@ fn build_minimal_model(weight_data: &[f32], weight_shape: &[i64]) -> ModelProto 
         }),
         ..Default::default()
     }
+}
+
+#[test]
+fn quantized_metadata_rejects_malformed_shapes_without_allocating_defaults() {
+    let mut proto = build_minimal_model(&[1.0], &[1, 1]);
+    let graph = proto.graph.as_mut().unwrap();
+    graph.initializer = vec![
+        TensorProto {
+            name: "weight_quantized".into(),
+            dims: vec![1, 1],
+            data_type: tensor_proto::DataType::Int8 as i32,
+            raw_data: vec![1],
+            ..Default::default()
+        },
+        TensorProto {
+            name: "weight_scale".into(),
+            data_type: tensor_proto::DataType::Float as i32,
+            float_data: vec![0.1],
+            ..Default::default()
+        },
+        TensorProto {
+            name: "weight_zp".into(),
+            data_type: tensor_proto::DataType::Int8 as i32,
+            raw_data: vec![0],
+            ..Default::default()
+        },
+    ];
+    for slot in 0..3 {
+        for dims in [vec![-1], vec![0], vec![i64::MAX, 3]] {
+            let mut malformed = proto.clone();
+            malformed.graph.as_mut().unwrap().initializer[slot].dims = dims;
+            let model = OnnxModel::from_bytes(&malformed.encode_to_vec()).unwrap();
+            assert!(model.try_load_quantized_info().is_err());
+            assert!(model.load_quantized_info().is_empty());
+        }
+    }
+    for slot in [1, 2] {
+        // Huge but representable dimensions with no payload formerly allocated
+        // an enormous vector of fallback scales / zero points.
+        let mut malformed = proto.clone();
+        let tensor = &mut malformed.graph.as_mut().unwrap().initializer[slot];
+        tensor.dims = vec![1 << 30];
+        tensor.float_data.clear();
+        tensor.raw_data.clear();
+        let model = OnnxModel::from_bytes(&malformed.encode_to_vec()).unwrap();
+        assert!(model.try_load_quantized_info().is_err());
+    }
+    let model = OnnxModel::from_bytes(&proto.encode_to_vec()).unwrap();
+    let info = model.try_load_quantized_info().unwrap();
+    assert_eq!(info[0].original_length, 1);
+    assert_eq!(info[0].scales, vec![0.1]);
+    assert_eq!(info[0].zero_points, vec![0]);
 }
 
 /// Build a two-weight ONNX ModelProto with two Conv nodes chained.
@@ -1100,221 +1151,31 @@ models:
 // Calibration-aware quantization (quantize_tensor_with_name)
 // ===========================================================================
 
-/// Verify that Quantizer::with_calibration uses activation stats to determine
-/// quantization ranges, producing different scales than weight-only quantization.
+/// The unsafe legacy route must fail rather than silently ignore stats or
+/// apply activation ranges to weights, including when only overrides are used.
 #[test]
-fn test_calibrated_quantization_uses_stats() {
-    // Weight data spans [-1, 1] but the activation stats say the real range is [-0.5, 0.5].
-    // Calibrated quantization should produce a tighter scale (smaller) than weight-only.
-    let weight_data: Vec<f32> = (0..64).map(|i| (i as f32 - 32.0) / 32.0).collect();
-    let shape = vec![4, 16];
-
-    // Weight-only quantization (uses data min/max = [-1, 1])
-    let config_uncalibrated = QuantConfig {
-        bits: 8,
-        ..Default::default()
-    };
-    let q_uncalibrated = Quantizer::new(config_uncalibrated);
-    let result_uncalibrated = q_uncalibrated
-        .quantize_tensor_with_name("layer0.weight", &weight_data, shape.clone())
-        .unwrap();
-
-    // Build activation stats with a narrower range [-0.5, 0.5]
-    let activation_data: Vec<f32> = (0..1000).map(|i| (i as f32 - 500.0) / 1000.0).collect();
-    let stats = ActivationStats::from_data(&activation_data);
-
-    let mut stats_map = HashMap::new();
-    stats_map.insert("layer0.weight".to_string(), stats);
-
-    // Calibrated quantization (uses stats range [-0.5, 0.5])
-    let config_calibrated = QuantConfig {
-        bits: 8,
-        ..Default::default()
-    };
-    let q_calibrated = Quantizer::with_calibration(config_calibrated, stats_map);
-    let result_calibrated = q_calibrated
-        .quantize_tensor_with_name("layer0.weight", &weight_data, shape.clone())
-        .unwrap();
-
-    // The calibrated version should use a different (tighter) scale
-    let (scales_uncal, _) = result_uncalibrated.get_all_scales_zero_points();
-    let (scales_cal, _) = result_calibrated.get_all_scales_zero_points();
-
-    assert_eq!(scales_uncal.len(), 1);
-    assert_eq!(scales_cal.len(), 1);
-    // Calibrated scale should be smaller because the range is narrower
-    assert!(
-        scales_cal[0] < scales_uncal[0],
-        "Calibrated scale ({}) should be < uncalibrated scale ({})",
-        scales_cal[0],
-        scales_uncal[0],
-    );
-}
-
-/// Verify that calibration with an explicit CalibrationMethod (MinMax) works.
-#[test]
-fn test_calibrated_quantization_with_method() {
-    let weight_data: Vec<f32> = (0..100).map(|i| (i as f32 - 50.0) * 0.1).collect();
-    let shape = vec![10, 10];
-
-    // Activation data with some outliers, but most values in [-1, 1]
-    let mut activation_data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 250.0).collect();
-    activation_data.push(10.0); // outlier
-    activation_data.push(-10.0); // outlier
-    let stats = ActivationStats::from_data(&activation_data);
-
-    let mut stats_map = HashMap::new();
-    stats_map.insert("conv.weight".to_string(), stats);
-
-    // With MinMax method — should use full observed range including outliers
-    let config = QuantConfig {
-        bits: 8,
-        calibration_method: Some(CalibrationMethod::MinMax),
-        ..Default::default()
-    };
-    let quantizer = Quantizer::with_calibration(config, stats_map);
-    let result = quantizer
-        .quantize_tensor_with_name("conv.weight", &weight_data, shape)
-        .unwrap();
-
-    assert!(result.is_int8());
-    let error = result.quantization_error(&weight_data);
-    // Should have finite error — the calibrated range includes outliers ±10 so
-    // error is higher than weight-only, but must be finite and bounded.
-    assert!(error.is_finite());
-    assert!(
-        error < 10.0,
-        "Quantization error unexpectedly high: {}",
-        error
-    );
-}
-
-/// Verify fallback when no stats exist for a specific layer.
-#[test]
-fn test_calibrated_quantization_fallback_no_stats() {
-    let weight_data: Vec<f32> = (0..32).map(|i| (i as f32 - 16.0) * 0.5).collect();
-    let shape = vec![4, 8];
-
-    // Stats map has a different layer name — should fall back to data min/max
-    let stats = ActivationStats::from_data(&[0.0, 1.0]);
-    let mut stats_map = HashMap::new();
-    stats_map.insert("other_layer.weight".to_string(), stats);
-
-    let config = QuantConfig {
-        bits: 8,
-        ..Default::default()
-    };
-    let q_calibrated = Quantizer::with_calibration(config.clone(), stats_map);
-    let result_calibrated = q_calibrated
-        .quantize_tensor_with_name("conv.weight", &weight_data, shape.clone())
-        .unwrap();
-
-    // Without calibration at all — should produce same result as fallback
-    let q_uncalibrated = Quantizer::new(config);
-    let result_uncalibrated = q_uncalibrated
-        .quantize_tensor_with_name("conv.weight", &weight_data, shape)
-        .unwrap();
-
-    let (scales_cal, zps_cal) = result_calibrated.get_all_scales_zero_points();
-    let (scales_uncal, zps_uncal) = result_uncalibrated.get_all_scales_zero_points();
-
-    assert_eq!(
-        scales_cal, scales_uncal,
-        "Fallback should match uncalibrated"
-    );
-    assert_eq!(zps_cal, zps_uncal, "Fallback should match uncalibrated");
-}
-
-/// Verify calibrated INT4 quantization works end-to-end.
-#[test]
-fn test_calibrated_quantization_int4() {
-    let weight_data: Vec<f32> = (0..48).map(|i| (i as f32 - 24.0) / 24.0).collect();
-    let shape = vec![6, 8];
-
-    let activation_data: Vec<f32> = (0..200).map(|i| (i as f32 - 100.0) / 100.0).collect();
-    let stats = ActivationStats::from_data(&activation_data);
-
-    let mut stats_map = HashMap::new();
-    stats_map.insert("fc.weight".to_string(), stats);
-
-    let config = QuantConfig {
-        bits: 4,
-        ..Default::default()
-    };
-    let quantizer = Quantizer::with_calibration(config, stats_map);
-    let result = quantizer
-        .quantize_tensor_with_name("fc.weight", &weight_data, shape)
-        .unwrap();
-
-    assert!(result.is_int4());
-    assert_eq!(result.bits(), 4);
-    let error = result.quantization_error(&weight_data);
-    assert!(error.is_finite());
-}
-
-/// Full pipeline: calibrate + quantize + save + reload + validate.
-#[test]
-fn test_calibrated_full_pipeline() {
-    let weight_data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.1).collect();
-    let model = build_minimal_model(&weight_data, &[4, 4]);
-
-    let dir = tempfile::tempdir().unwrap();
-    let input_path = write_model_to_tempfile(&model, &dir, "calib_input.onnx");
-    let output_path = dir.path().join("calib_output.onnx");
-
-    // Load and extract weights
-    let mut loaded = OnnxModel::load(&input_path).unwrap();
-    let weights = loaded.extract_weights();
-    assert_eq!(weights.len(), 1);
-
-    // Build calibration stats for the weight
-    let activation_data: Vec<f32> = (0..500).map(|i| (i as f32 - 250.0) / 500.0).collect();
-    let stats = ActivationStats::from_data(&activation_data);
-    let mut stats_map = HashMap::new();
-    stats_map.insert("weight".to_string(), stats);
-
-    let config = QuantConfig {
-        bits: 8,
-        ..Default::default()
-    };
-    let quantizer = Quantizer::with_calibration(config, stats_map);
-
-    let mut quantized_data = Vec::new();
-    for weight in &weights {
-        let quantized = quantizer
-            .quantize_tensor_with_name(&weight.name, &weight.data, weight.shape.clone())
-            .unwrap();
-
-        let (scales, zero_points) = quantized.get_all_scales_zero_points();
-        let is_per_channel = quantized.is_per_channel();
-
-        quantized_data.push(QdqWeightInput {
-            original_name: weight.name.clone(),
-            quantized_values: quantized.data(),
-            scales,
-            zero_points,
-            bits: quantized.bits(),
-            axis: if is_per_channel { Some(0) } else { None },
-        });
+#[allow(deprecated)]
+fn test_legacy_calibrated_weights_rejected() {
+    for name in ["weight", "different_node"] {
+        let stats = HashMap::from([(name.to_string(), ActivationStats::from_data(&[0.0, 15.0]))]);
+        let config = QuantConfig {
+            layer_bits: HashMap::from([("weight".into(), 4)]),
+            ..Default::default()
+        };
+        let quantizer = Quantizer::with_calibration(config, stats);
+        assert!(matches!(
+            quantizer.quantize_tensor_with_name("weight", &[-0.1, 0.1], vec![1, 2]),
+            Err(QuantizeError::UnsupportedConfig { .. })
+        ));
+        assert!(quantizer.quantize_tensor(&[-0.1, 0.1], vec![1, 2]).is_err());
+        assert!(quantizer
+            .quantize_weights(&[WeightTensor {
+                name: "weight".into(),
+                data: vec![-0.1, 0.1],
+                shape: vec![1, 2]
+            }])
+            .is_err());
     }
-
-    loaded
-        .save_quantized(&quantized_data, &output_path)
-        .unwrap();
-
-    // Reload and validate
-    let reloaded = OnnxModel::load(&output_path).unwrap();
-    let report = reloaded.validate_connectivity();
-    assert!(
-        report.valid,
-        "Connectivity broken: {:?}",
-        report.broken_refs
-    );
-
-    let qdq_info = reloaded.load_quantized_info();
-    assert_eq!(qdq_info.len(), 1);
-    assert_eq!(qdq_info[0].name, "weight");
-    assert!(qdq_info[0].scale().expect("scale must exist") > 0.0);
 }
 
 // ===========================================================================
@@ -2220,4 +2081,13 @@ fn test_info_reports_opset_version() {
         13,
         "info() should report the default-domain opset"
     );
+}
+
+#[test]
+fn test_overflowing_tensor_shape_returns_error() {
+    let shape = vec![usize::MAX, 2];
+    assert!(QuantizedTensor::from_f32(&[1.0], shape.clone()).is_err());
+    assert!(QuantizedTensor::from_f32_per_channel(&[1.0], shape.clone()).is_err());
+    assert!(QuantizedTensorInt4::from_f32(&[1.0], shape.clone()).is_err());
+    assert!(QuantizedTensorInt4::from_f32_per_channel(&[1.0], shape).is_err());
 }

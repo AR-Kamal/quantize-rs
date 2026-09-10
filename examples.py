@@ -166,11 +166,10 @@ def mixed_precision(input_path: str, output_path: str):
 # ---------------------------------------------------------------------------
 
 def calibrate_with_real_data(input_path: str, output_path: str, data_path: str):
-    """Calibration with real data (best accuracy).
+    """Static INT8 Conv activation quantization with representative data.
 
-    Runs forward passes on representative samples to determine
-    optimal quantization ranges per layer. Much better than
-    weight-only quantization for accuracy-sensitive deployments.
+    Requires opset >= 13 and one fixed FP32 NCHW input with batch 1.
+    Compare held-out accuracy against weight-only quantization before deployment.
 
     The .npy file should have shape [num_samples, ...input_dims],
     e.g., [100, 3, 224, 224] for ImageNet models.
@@ -186,23 +185,7 @@ def calibrate_with_real_data(input_path: str, output_path: str, data_path: str):
     print(f"Calibrated (real data, minmax): {output_path}")
 
 
-def calibrate_with_random_samples(input_path: str, output_path: str):
-    """Calibration with random samples (no data needed).
-
-    When you don't have calibration data, random samples still
-    give better results than weight-only quantization. The input
-    shape is auto-detected from the model.
-    """
-    quantize_rs.quantize_with_calibration(
-        input_path,
-        output_path,
-        num_samples=50,
-        method="percentile",
-    )
-    print(f"Calibrated (random samples, percentile): {output_path}")
-
-
-def compare_calibration_methods(input_path: str, output_dir: str):
+def compare_calibration_methods(input_path: str, output_dir: str, data_path: str):
     """Compare all four calibration methods side by side.
 
     - minmax:     Uses observed min/max. Fast, sometimes sensitive to outliers.
@@ -217,32 +200,24 @@ def compare_calibration_methods(input_path: str, output_dir: str):
         quantize_rs.quantize_with_calibration(
             input_path,
             output_path,
-            num_samples=50,
+            calibration_data=data_path,
             method=method,
         )
         size_mb = os.path.getsize(output_path) / (1024 * 1024)
         print(f"  {method:12s} -> {size_mb:.2f} MB")
 
 
-def calibrate_with_explicit_shape(input_path: str, output_path: str):
-    """Random-sample calibration with an explicit input shape + custom percentile.
+def calibrate_with_explicit_shape(input_path: str, output_path: str, data_path: str):
+    """Validate a supplied ImageNet-shaped dataset and use a custom percentile.
 
-    When the model's input shape can't be auto-detected (dynamic / symbolic
-    dims), pass `sample_shape` *without* the batch dimension. `method` accepts
-    `"percentile:NN"` to clip at the NN-th percentile instead of the default
-    99.9 — lower values clip more aggressively (more robust to outliers, but
-    can discard real signal). `symmetric` and `native_int4` work here too.
+    Explicit sample_shape is an assertion about data, not a dynamic-shape override.
     """
     quantize_rs.quantize_with_calibration(
-        input_path,
-        output_path,
-        num_samples=50,
-        sample_shape=[3, 224, 224],   # e.g. ImageNet RGB; omit the batch dim
-        method="percentile:95",
-        per_channel=True,
-        symmetric=True,
+        input_path, output_path, calibration_data=data_path,
+        sample_shape=[3, 224, 224], method="percentile:95",
+        per_channel=True, symmetric=True,
     )
-    print(f"Calibrated (shape=[3,224,224], percentile:95, symmetric): {output_path}")
+    print(f"Calibrated (shape=[3,224,224], percentile:95): {output_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -542,13 +517,17 @@ Examples:
         if args.data:
             calibrate_with_real_data(args.model, args.output, args.data)
         else:
-            calibrate_with_random_samples(args.model, args.output)
+            parser.error("--example calibrate requires --data samples.npy")
 
     elif args.example == "calibrate-shape":
-        calibrate_with_explicit_shape(args.model, args.output)
+        if not args.data:
+            parser.error("--example calibrate-shape requires --data samples.npy")
+        calibrate_with_explicit_shape(args.model, args.output, args.data)
 
     elif args.example == "compare":
-        compare_calibration_methods(args.model, args.output_dir)
+        if not args.data:
+            parser.error("--example compare requires --data samples.npy")
+        compare_calibration_methods(args.model, args.output_dir, args.data)
 
     elif args.example == "verify":
         # Quantize first, then verify

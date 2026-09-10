@@ -1,12 +1,13 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # ── 0. Gate: version/tag consistency + full quality bar + crate packaging ──
@@ -22,12 +23,15 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Tag matches Cargo.toml and pyproject.toml versions
+      - name: Candidate versions agree (and match the tag on publication)
         run: |
-          tag="${GITHUB_REF_NAME#v}"
           cargo_ver=$(grep -m1 '^version[[:space:]]*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
           py_ver=$(grep -m1 '^version[[:space:]]*=' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "tag=$tag  Cargo.toml=$cargo_ver  pyproject.toml=$py_ver"
+          tag="$cargo_ver"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+          fi
+          echo "candidate=$tag  Cargo.toml=$cargo_ver  pyproject.toml=$py_ver"
           if [ -z "$tag" ] || [ -z "$cargo_ver" ] || [ -z "$py_ver" ]; then
             echo "::error::could not parse a version (tag='$tag' cargo='$cargo_ver' pyproject='$py_ver')"
             exit 1
@@ -41,21 +45,47 @@ jobs:
             exit 1
           fi
           echo "OK: tag and both manifests agree on version $tag"
+      - name: Tests (default features)
+        run: cargo test --locked --all
+      - name: Tests (without calibration)
+        run: cargo test --locked --no-default-features --lib
+      - name: Tests (safetensors without calibration)
+        run: cargo test --locked --no-default-features --features safetensors-input --lib
+      - name: Examples and benchmark compilation
+        run: |
+          cargo check --locked --examples
+          cargo check --locked --no-default-features --examples
+          cargo bench --locked --all-features --no-run
       - name: Tests (all features)
-        run: cargo test --all-features --all
+        run: cargo test --locked --all-features --all
       - name: Clippy (all features, all targets)
-        run: cargo clippy --all-features --all-targets -- -D warnings
+        run: cargo clippy --locked --all-features --all-targets -- -D warnings
       - name: Check formatting
         run: cargo fmt -- --check
       - name: Build docs (deny warnings)
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --locked --no-deps --all-features
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify CLI and Python runtime execution before publishing
+        run: |
+          python -m pip install numpy onnx onnxruntime maturin psutil
+          cargo build --locked --bin quantize-rs
+          maturin build --locked --features python
+          python -m pip install --force-reinstall --no-deps target/wheels/*.whl
+          python eval/ort_smoke_test.py --binary ./target/debug/quantize-rs
+          python -m unittest discover -s eval -p test_gpt2_evaluation.py -v
+          python eval/operator_axes_smoke_test.py --binary ./target/debug/quantize-rs --python
+          python eval/calibration_smoke_test.py --binary ./target/debug/quantize-rs --python
+          python eval/matrix_calibration_smoke_test.py --binary ./target/debug/quantize-rs
+          python eval/cnn_evaluation.py --mnist --download --binary ./target/debug/quantize-rs
       # Package + build the crate exactly as crates.io would, so packaging
       # problems (excluded-but-referenced files, etc.) fail here — before any
       # real publish — rather than after PyPI has already gone out.
       - name: Crate packaging dry-run
-        run: cargo publish --dry-run
+        run: cargo publish --locked --dry-run
 
   # ── 1. Build Python wheels on all platforms (only after verify) ──
   build-wheels:
@@ -75,13 +105,27 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           # `pyo3/abi3-py39` is enabled in Cargo.toml so this builds a single
           # ABI3 wheel compatible with Python 3.9 and every newer release.
-          args: --release --features python
+          args: --locked --release --features python
           manylinux: ${{ matrix.manylinux || 'auto' }}
+      - name: Inspect wheel contents and metadata
+        shell: bash
+        run: python scripts/check_release_artifacts.py target/wheels/*.whl
+      - name: Install and import native wheel
+        # macOS x86_64 is cross-built on the arm64 runner; validate its build
+        # here, and require an Intel installation check before publication.
+        if: matrix.target != 'x86_64-apple-darwin' || runner.arch == 'X64'
+        shell: bash
+        run: |
+          python -m pip install --no-deps target/wheels/*.whl
+          python -c "import importlib.metadata as m, quantize_rs; assert quantize_rs.__version__ == m.version('quantization-rs')"
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.target }}
@@ -96,6 +140,19 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Inspect sdist and rebuild an installable wheel
+        run: |
+          python scripts/check_release_artifacts.py target/wheels/*.tar.gz
+          python -m pip install maturin
+          python -m pip wheel --no-build-isolation --no-deps --config-settings build-args=--locked --wheel-dir target/rebuilt target/wheels/*.tar.gz
+          python scripts/check_release_artifacts.py target/rebuilt/*.whl
+          python -m pip install --no-deps target/rebuilt/*.whl
+          python -c "import importlib.metadata as m, quantize_rs; assert quantize_rs.__version__ == m.version('quantization-rs')"
       - uses: actions/upload-artifact@v4
         with:
           name: sdist
@@ -107,6 +164,7 @@ jobs:
   # release. This is the first (and irreversible) publish — it acts as the commit
   # point that PyPI then follows.
   publish-crate:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [build-wheels, build-sdist]
     runs-on: ubuntu-latest
     steps:
@@ -114,7 +172,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Publish to crates.io
-        run: cargo publish
+        run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -124,6 +182,7 @@ jobs:
   # the one remaining split, and a recoverable one: re-run this job (the crate is
   # already out, so it is skipped).
   publish-pypi:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [build-wheels, build-sdist, publish-crate]
     runs-on: ubuntu-latest
     steps:
@@ -140,6 +199,9 @@ jobs:
   # No `always()`: this runs only when publish-crate AND publish-pypi both
   # succeeded, so a GitHub release is never created for a half-published version.
   github-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     needs: [publish-crate, publish-pypi]
     runs-on: ubuntu-latest
     steps:
@@ -150,9 +212,9 @@ jobs:
           merge-multiple: true
       - name: Create release
         run: |
-          gh release create ${{ github.ref_name }} \
-            --title "${{ github.ref_name }}" \
-            --notes "See [CHANGELOG.md](CHANGELOG.md) for full details." \
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "See [CHANGELOG.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md) for full details." \
             dist/*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

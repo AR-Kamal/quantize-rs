@@ -8,21 +8,22 @@ use crate::errors::{QuantizeError, Result};
 
 /// Configuration for a quantization pass.
 ///
-/// Fields are public for ergonomic construction in callers; new fields are
-/// added only on a minor version bump and downstream `..Default::default()`
-/// callers continue to compile.  Always construct via
-/// `QuantConfig { /* fields */, ..Default::default() }`.
+/// Construct via `QuantConfig::default()` or the builders. The existing public
+/// field set is frozen for v1.x: adding fields would break exhaustive literals,
+/// even though this type implements `Default`. Future options require separate
+/// types or a major release.
 #[derive(Debug, Clone)]
 pub struct QuantConfig {
     /// Bit width: `4` for INT4 or `8` for INT8.
     pub bits: u8,
-    /// When `true`, compute separate scale/zero-point per output channel (axis 0).
+    /// When `true`, use operator-selected output-channel axes for model APIs.
+    /// Tensor/slice APIs without graph context retain axis 0.
     pub per_channel: bool,
     /// When `true`, force `zero_point == 0` (symmetric quantization) — required
     /// by most ONNX Runtime / TensorRT INT8 matmul kernels for per-channel
     /// weight quantization.  Defaults to `false` (asymmetric).
     pub symmetric: bool,
-    /// Optional calibration method used for range optimization.
+    /// Activation range method used by `quantize_static`; weight-only calls ignore it.
     pub calibration_method: Option<crate::calibration::methods::CalibrationMethod>,
     /// Layer names to skip entirely (exact match against the initializer name).
     pub excluded_layers: Vec<String>,
@@ -266,6 +267,7 @@ pub struct QuantizedTensorGeneric<R: QuantRange> {
     pub(crate) params: QuantParamsGeneric<R>,
     pub(crate) per_channel: bool,
     pub(crate) channel_params: Option<Vec<QuantParamsGeneric<R>>>,
+    axis: Option<usize>,
 }
 
 /// An INT8 quantized tensor with optional per-channel parameters.
@@ -295,6 +297,11 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
         self.per_channel
     }
 
+    /// Quantization axis, or `None` for per-tensor quantization.
+    pub fn axis(&self) -> Option<usize> {
+        self.axis
+    }
+
     /// Quantize FP32 data, computing the range from the data (asymmetric).
     ///
     /// # Errors
@@ -319,7 +326,12 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
             });
         }
 
-        let expected_len: usize = shape.iter().product();
+        let expected_len = shape
+            .iter()
+            .try_fold(1usize, |n, d| n.checked_mul(*d))
+            .ok_or_else(|| QuantizeError::InvalidTensor {
+                reason: "tensor shape overflows usize".into(),
+            })?;
         if expected_len != data.len() {
             return Err(QuantizeError::InvalidTensor {
                 reason: format!(
@@ -363,6 +375,7 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
             params,
             per_channel: false,
             channel_params: None,
+            axis: None,
         })
     }
 
@@ -404,7 +417,12 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
             });
         }
 
-        let expected_len: usize = shape.iter().product();
+        let expected_len = shape
+            .iter()
+            .try_fold(1usize, |n, d| n.checked_mul(*d))
+            .ok_or_else(|| QuantizeError::InvalidTensor {
+                reason: "tensor shape overflows usize".into(),
+            })?;
         if expected_len != data.len() {
             return Err(QuantizeError::InvalidTensor {
                 reason: format!(
@@ -431,6 +449,7 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
             params,
             per_channel: false,
             channel_params: None,
+            axis: None,
         })
     }
 
@@ -441,19 +460,25 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
     /// Returns [`QuantizeError::InvalidTensor`] if `data` is empty, shape
     /// mismatches, or the tensor is scalar.
     pub fn from_f32_per_channel(data: &[f32], shape: Vec<usize>) -> Result<Self> {
-        Self::from_f32_per_channel_with_mode(data, shape, false)
+        Self::from_f32_per_channel_axis(data, shape, 0, false)
     }
 
     /// Same as [`from_f32_per_channel`](Self::from_f32_per_channel) but emits
     /// symmetric parameters (`zero_point == 0` for every channel).  Required
     /// by most INT8 per-channel matmul kernels.
     pub fn from_f32_per_channel_symmetric(data: &[f32], shape: Vec<usize>) -> Result<Self> {
-        Self::from_f32_per_channel_with_mode(data, shape, true)
+        Self::from_f32_per_channel_axis(data, shape, 0, true)
     }
 
-    fn from_f32_per_channel_with_mode(
+    /// Quantize along an explicit axis, preserving the original row-major layout.
+    ///
+    /// Ranges aggregate all dimensions other than `axis`, including batch axes.
+    /// `symmetric` controls whether all zero points are zero. Returns an error
+    /// for an invalid axis, mismatched/overflowing shape or nonfinite-only channel.
+    pub fn from_f32_per_channel_axis(
         data: &[f32],
         shape: Vec<usize>,
+        axis: usize,
         symmetric: bool,
     ) -> Result<Self> {
         if data.is_empty() {
@@ -462,13 +487,18 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
             });
         }
 
-        if shape.is_empty() {
+        if axis >= shape.len() {
             return Err(QuantizeError::InvalidTensor {
-                reason: "Cannot do per-channel quantization on scalar".into(),
+                reason: format!("Per-channel axis {axis} is invalid for shape {shape:?}"),
             });
         }
 
-        let expected_len: usize = shape.iter().product();
+        let expected_len = shape
+            .iter()
+            .try_fold(1usize, |n, d| n.checked_mul(*d))
+            .ok_or_else(|| QuantizeError::InvalidTensor {
+                reason: "tensor shape overflows usize".into(),
+            })?;
         if expected_len != data.len() {
             return Err(QuantizeError::InvalidTensor {
                 reason: format!(
@@ -480,7 +510,7 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
             });
         }
 
-        let num_channels = shape[0];
+        let num_channels = shape[axis];
         if num_channels == 0 {
             return Err(QuantizeError::InvalidTensor {
                 reason: "Number of channels is 0".into(),
@@ -499,6 +529,47 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
 
         let mut channel_params = Vec::with_capacity(num_channels);
         let mut quantized_data = Vec::with_capacity(data.len());
+
+        if axis != 0 {
+            // The full shape product was checked above; positive subproducts fit.
+            let stride = shape[axis + 1..].iter().product::<usize>();
+            let mut ranges = vec![(f32::INFINITY, f32::NEG_INFINITY); num_channels];
+            for (i, &value) in data.iter().enumerate() {
+                if value.is_finite() {
+                    let range = &mut ranges[(i / stride) % num_channels];
+                    range.0 = range.0.min(value);
+                    range.1 = range.1.max(value);
+                }
+            }
+            for (channel, (min, max)) in ranges.into_iter().enumerate() {
+                if !min.is_finite() || !max.is_finite() {
+                    return Err(QuantizeError::InvalidTensor {
+                        reason: format!(
+                            "Channel {channel} contains only non-finite values (NaN/Inf)"
+                        ),
+                    });
+                }
+                channel_params.push(if symmetric {
+                    QuantParamsGeneric::<R>::from_range_symmetric(min, max)
+                } else {
+                    QuantParamsGeneric::<R>::from_range(min, max)
+                });
+            }
+            quantized_data.extend(
+                data.iter()
+                    .enumerate()
+                    .map(|(i, &value)| channel_params[(i / stride) % num_channels].quantize(value)),
+            );
+            return Ok(Self {
+                data: quantized_data,
+                packed_data: None,
+                shape,
+                params: channel_params[0].clone(),
+                per_channel: true,
+                channel_params: Some(channel_params),
+                axis: Some(axis),
+            });
+        }
 
         // Walk the data channel-by-channel with a borrowed slice — no Vec alloc
         // per channel.  For typical Conv weights this avoids hundreds of small
@@ -546,6 +617,7 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
             params,
             per_channel: true,
             channel_params: Some(channel_params),
+            axis: Some(axis),
         })
     }
 
@@ -564,6 +636,16 @@ impl<R: QuantRange> QuantizedTensorGeneric<R> {
             if let Some(ref channel_params) = self.channel_params {
                 if channel_params.is_empty() {
                     return data.iter().map(|&v| self.params.dequantize(v)).collect();
+                }
+                if let Some(axis) = self.axis.filter(|&a| a != 0) {
+                    let stride = self.shape[axis + 1..].iter().product::<usize>();
+                    return data
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &value)| {
+                            channel_params[(i / stride) % channel_params.len()].dequantize(value)
+                        })
+                        .collect();
                 }
                 // Walk contiguous per-channel slices.  The constructor
                 // guarantees `data.len()` is an exact multiple of the channel
@@ -740,6 +822,13 @@ pub enum QuantizedTensorType {
 }
 
 impl QuantizedTensorType {
+    /// Quantization axis, or `None` for per-tensor quantization.
+    pub fn axis(&self) -> Option<usize> {
+        match self {
+            Self::Int8(t) => t.axis(),
+            Self::Int4(t) => t.axis(),
+        }
+    }
     /// Dequantize all values back to FP32.
     pub fn to_f32(&self) -> Vec<f32> {
         match self {
@@ -882,7 +971,12 @@ impl Quantizer {
         }
     }
 
-    /// Create a quantizer with configuration and pre-collected activation statistics.
+    /// Legacy calibrated-weight API. Quantization calls on this object return
+    /// `UnsupportedConfig`: activation ranges cannot be used as weight ranges.
+    /// Use `quantize_static` for actual activation quantization.
+    #[deprecated(
+        note = "use quantize_static; activation statistics cannot calibrate weight ranges"
+    )]
     pub fn with_calibration(
         config: QuantConfig,
         stats: std::collections::HashMap<String, crate::calibration::stats::ActivationStats>,
@@ -893,99 +987,60 @@ impl Quantizer {
         }
     }
 
-    /// Quantize a tensor with optional calibration.
+    /// Quantize a named weight using its own range. Legacy calibrated-weight objects are rejected.
     pub fn quantize_tensor_with_name(
         &self,
         name: &str,
         data: &[f32],
         shape: Vec<usize>,
     ) -> Result<QuantizedTensorType> {
-        let (min, max) = if let Some(ref stats_map) = self.calibration_stats {
-            if let Some(stats) = stats_map.get(name) {
-                if let Some(method) = self.config.calibration_method {
-                    // Compute the range directly from the histogram — deterministic,
-                    // no sample regeneration, no RNG.
-                    use crate::calibration::stats::calculate_optimal_range_from_stats;
-                    calculate_optimal_range_from_stats(stats, method)
-                } else {
-                    (stats.min(), stats.max())
-                }
-            } else {
-                finite_min_max(data, name)?
-            }
-        } else {
-            finite_min_max(data, name)?
-        };
-
-        self.quantize_with_range(data, shape, min, max)
+        let _ = name;
+        self.quantize_tensor(data, shape)
     }
 
-    /// Quantize a tensor using the configured bit width and per-channel setting.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QuantizeError::InvalidTensor`] or [`QuantizeError::UnsupportedConfig`].
+    /// Quantize weights using their own ranges. Activation statistics are never
+    /// applied to weight tensors.
     pub fn quantize_tensor(&self, data: &[f32], shape: Vec<usize>) -> Result<QuantizedTensorType> {
-        self.build_tensor_with_optional_range(data, shape, None)
+        self.ensure_weight_only()?;
+        self.build_tensor(data, shape, 0)
     }
 
-    /// Quantize with specific range (for calibration).
-    ///
-    /// When `per_channel` is enabled, the provided `min`/`max` are ignored
-    /// because per-channel quantization computes separate ranges from the
-    /// weight data for each channel.  The calibration range (derived from
-    /// activation statistics) applies to per-tensor mode only.
-    fn quantize_with_range(
+    fn ensure_weight_only(&self) -> Result<()> {
+        if self.calibration_stats.is_some() {
+            return Err(QuantizeError::UnsupportedConfig {
+                reason: "activation statistics cannot be applied to weight ranges; use quantize_static for Conv activation QDQ or Quantizer::new for weight-only quantization".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Build a tensor using weight-derived ranges and the selected axis.
+    fn build_tensor(
         &self,
         data: &[f32],
         shape: Vec<usize>,
-        min: f32,
-        max: f32,
-    ) -> Result<QuantizedTensorType> {
-        self.build_tensor_with_optional_range(data, shape, Some((min, max)))
-    }
-
-    /// Shared core: build a [`QuantizedTensorType`] for any bit-width and range mode.
-    fn build_tensor_with_optional_range(
-        &self,
-        data: &[f32],
-        shape: Vec<usize>,
-        range: Option<(f32, f32)>,
+        axis: usize,
     ) -> Result<QuantizedTensorType> {
         let pc = self.config.per_channel && shape.len() >= 2;
         let sym = self.config.symmetric;
         match self.config.bits {
             8 => {
-                let t = match (pc, range, sym) {
-                    (true, _, true) => {
-                        QuantizedTensor::from_f32_per_channel_symmetric(data, shape)?
+                let t = match (pc, sym) {
+                    (true, _) => {
+                        QuantizedTensor::from_f32_per_channel_axis(data, shape, axis, sym)?
                     }
-                    (true, _, false) => QuantizedTensor::from_f32_per_channel(data, shape)?,
-                    (false, Some((min, max)), true) => {
-                        QuantizedTensor::from_f32_with_range_symmetric(data, shape, min, max)?
-                    }
-                    (false, Some((min, max)), false) => {
-                        QuantizedTensor::from_f32_with_range(data, shape, min, max)?
-                    }
-                    (false, None, true) => QuantizedTensor::from_f32_symmetric(data, shape)?,
-                    (false, None, false) => QuantizedTensor::from_f32(data, shape)?,
+                    (false, true) => QuantizedTensor::from_f32_symmetric(data, shape)?,
+                    (false, false) => QuantizedTensor::from_f32(data, shape)?,
                 };
                 Ok(QuantizedTensorType::Int8(t))
             }
             4 => {
-                let mut t = match (pc, range, sym) {
-                    (true, _, true) => {
-                        QuantizedTensorInt4::from_f32_per_channel_symmetric(data, shape)?
+                let mut t = match (pc, sym) {
+                    (true, _) => {
+                        QuantizedTensorInt4::from_f32_per_channel_axis(data, shape, axis, sym)?
                     }
-                    (true, _, false) => QuantizedTensorInt4::from_f32_per_channel(data, shape)?,
-                    (false, Some((min, max)), true) => {
-                        QuantizedTensorInt4::from_f32_with_range_symmetric(data, shape, min, max)?
-                    }
-                    (false, Some((min, max)), false) => {
-                        QuantizedTensorInt4::from_f32_with_range(data, shape, min, max)?
-                    }
-                    (false, None, true) => QuantizedTensorInt4::from_f32_symmetric(data, shape)?,
-                    (false, None, false) => QuantizedTensorInt4::from_f32(data, shape)?,
+                    (false, true) => QuantizedTensorInt4::from_f32_symmetric(data, shape)?,
+                    (false, false) => QuantizedTensorInt4::from_f32(data, shape)?,
                 };
                 t.pack();
                 Ok(QuantizedTensorType::Int4(t))
@@ -996,30 +1051,28 @@ impl Quantizer {
         }
     }
 
-    /// Quantize every weight in `model` that passes
-    /// [`QuantConfig::should_quantize`].  Honours per-layer bit-width overrides.
+    /// Select direct Conv/MatMul/Gemm weights and their axes from graph usage,
+    /// then quantize those passing [`QuantConfig::should_quantize`]. Honours
+    /// per-layer bit-width overrides. Shared incompatible uses return errors.
     ///
-    /// When this quantizer was built with calibration, activation-based
-    /// range optimization is used for the default bit-width; layers whose
-    /// bit-width is overridden fall back to weight-only quantization
-    /// (the calibration stats are keyed by the default configuration).
+    /// Weights always use their own ranges, including per-layer overrides.
+    /// Legacy objects built with `with_calibration` are rejected.
     ///
     /// Skipped weights do not appear in the returned vector.
     pub fn quantize_model(
         &self,
         model: &crate::onnx_utils::OnnxModel,
     ) -> Result<Vec<QuantizedWeightOutput>> {
-        let weights = model.extract_weights();
-        self.quantize_weights(&weights)
+        self.ensure_weight_only()?;
+        let weights = model.select_weights(&self.config)?;
+        self.quantize_selected_weights(&weights)
     }
 
     /// Quantize a slice of already-extracted weights.
     ///
-    /// Identical to [`quantize_model`](Self::quantize_model) but skips the
-    /// [`extract_weights`](crate::onnx_utils::OnnxModel::extract_weights) call.
-    /// Prefer this when the caller already holds the weights (e.g. to report the
-    /// pre-quantization count and size): extracting once and passing the slice
-    /// here avoids decoding every initializer's `raw_data` into `f32` twice.
+    /// This low-level API has no graph context and retains axis 0. For model-aware
+    /// selection/axes use [`quantize_model`](Self::quantize_model), or extract once
+    /// with `OnnxModel::select_weights` and call `quantize_selected_weights`.
     ///
     /// Skipped weights (per [`QuantConfig::should_quantize`]) do not appear in
     /// the returned vector.
@@ -1028,6 +1081,7 @@ impl Quantizer {
         weights: &[crate::onnx_utils::WeightTensor],
     ) -> Result<Vec<QuantizedWeightOutput>> {
         use rayon::prelude::*;
+        self.ensure_weight_only()?;
 
         let to_quantize: Vec<_> = weights
             .iter()
@@ -1036,22 +1090,38 @@ impl Quantizer {
 
         to_quantize
             .par_iter()
-            .map(|w| self.quantize_weight_to_output(w))
+            .map(|w| self.quantize_weight_to_output(w, 0))
+            .collect()
+    }
+
+    /// Quantize weights returned by `OnnxModel::select_weights`, retaining each
+    /// inferred axis. Selection filters and bit overrides are applied here too.
+    pub fn quantize_selected_weights(
+        &self,
+        weights: &[crate::onnx_utils::SelectedWeight],
+    ) -> Result<Vec<QuantizedWeightOutput>> {
+        use rayon::prelude::*;
+        self.ensure_weight_only()?;
+        weights
+            .par_iter()
+            .filter(|w| {
+                self.config
+                    .should_quantize(&w.weight().name, w.weight().num_elements())
+            })
+            .map(|w| self.quantize_weight_to_output(w.weight(), w.axis()))
             .collect()
     }
 
     fn quantize_weight_to_output(
         &self,
         weight: &crate::onnx_utils::WeightTensor,
+        axis: usize,
     ) -> Result<QuantizedWeightOutput> {
         let layer_bits = self.config.bits_for_layer(&weight.name);
 
-        // For the default bit-width, use the shared (possibly calibrated)
-        // quantizer.  For per-layer bit-width overrides, build a layer-local
-        // quantizer: calibration stats are keyed by the default configuration
-        // and re-applying them at a different bit-width is ill-defined.
+        // Apply the requested bit width using weight-derived ranges.
         let quantized = if layer_bits == self.config.bits {
-            self.quantize_tensor_with_name(&weight.name, &weight.data, weight.shape.clone())?
+            self.build_tensor(&weight.data, weight.shape.clone(), axis)?
         } else {
             let layer_config = QuantConfig {
                 bits: layer_bits,
@@ -1059,12 +1129,11 @@ impl Quantizer {
                 symmetric: self.config.symmetric,
                 ..Default::default()
             };
-            Quantizer::new(layer_config).quantize_tensor(&weight.data, weight.shape.clone())?
+            Quantizer::new(layer_config).build_tensor(&weight.data, weight.shape.clone(), axis)?
         };
 
         let mse = quantized.quantization_error(&weight.data);
         let (scales, zero_points) = quantized.get_all_scales_zero_points();
-        let is_per_channel = quantized.is_per_channel();
         let bits_used = quantized.bits();
         let quantized_size_bytes = quantized.size_bytes();
 
@@ -1075,7 +1144,7 @@ impl Quantizer {
                 scales,
                 zero_points,
                 bits: bits_used,
-                axis: if is_per_channel { Some(0) } else { None },
+                axis: quantized.axis(),
             },
             quantized_size_bytes,
             mse,
@@ -1104,36 +1173,91 @@ pub struct QuantizedWeightOutput {
     pub mse: f32,
 }
 
-// ---------------------------------------------------------------------------
-// Calibration helper
-// ---------------------------------------------------------------------------
-
-/// Compute the finite min/max of `data`, returning an error if all values are NaN/Inf.
-fn finite_min_max(data: &[f32], name: &str) -> Result<(f32, f32)> {
-    let min = data
-        .iter()
-        .copied()
-        .filter(|v| v.is_finite())
-        .fold(f32::INFINITY, f32::min);
-    let max = data
-        .iter()
-        .copied()
-        .filter(|v| v.is_finite())
-        .fold(f32::NEG_INFINITY, f32::max);
-    if !min.is_finite() || !max.is_finite() {
-        return Err(QuantizeError::InvalidTensor {
-            reason: format!(
-                "Tensor '{}' contains only non-finite values (NaN/Inf)",
-                name
-            ),
-        });
-    }
-    Ok((min, max))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn verify_strided_axes<R: QuantRange>() {
+        let shape = vec![2, 3, 2];
+        let data: Vec<f32> = (0..12)
+            .map(|i| ((i * 7 % 13) as f32 - 5.0) * (i + 1) as f32)
+            .collect();
+        for axis in 0..shape.len() {
+            for symmetric in [false, true] {
+                let tensor = QuantizedTensorGeneric::<R>::from_f32_per_channel_axis(
+                    &data,
+                    shape.clone(),
+                    axis,
+                    symmetric,
+                )
+                .unwrap();
+                assert_eq!(tensor.axis(), Some(axis));
+                let reconstructed = tensor.to_f32();
+                let stride: usize = shape[axis + 1..].iter().product();
+                for channel in 0..shape[axis] {
+                    let indices: Vec<_> = (0..data.len())
+                        .filter(|i| (i / stride) % shape[axis] == channel)
+                        .collect();
+                    let values: Vec<_> = indices.iter().map(|&i| data[i]).collect();
+                    let expected = QuantizedTensorGeneric::<R>::from_f32_with_mode(
+                        &values,
+                        vec![values.len()],
+                        symmetric,
+                    )
+                    .unwrap();
+                    for (j, &i) in indices.iter().enumerate() {
+                        assert_eq!(tensor.data[i], expected.data[j]);
+                        assert_eq!(reconstructed[i], expected.to_f32()[j]);
+                    }
+                }
+            }
+        }
+        let old = QuantizedTensorGeneric::<R>::from_f32_per_channel(&data, shape.clone()).unwrap();
+        let explicit =
+            QuantizedTensorGeneric::<R>::from_f32_per_channel_axis(&data, shape, 0, false).unwrap();
+        assert_eq!(old.data, explicit.data);
+        assert_eq!(old.to_f32(), explicit.to_f32());
+    }
+
+    #[test]
+    fn strided_axes_match_independently_quantized_channels() {
+        verify_strided_axes::<Int8Range>();
+        verify_strided_axes::<Int4Range>();
+    }
+
+    #[test]
+    fn axis_one_survives_int4_packing_with_odd_element_count() {
+        let data: Vec<f32> = (0..15).map(|i| i as f32 - 6.0).collect();
+        let mut tensor =
+            QuantizedTensorInt4::from_f32_per_channel_axis(&data, vec![3, 5], 1, true).unwrap();
+        let expected = tensor.to_f32();
+        tensor.pack();
+        assert_eq!(tensor.size_bytes(), 8);
+        assert_eq!(tensor.axis(), Some(1));
+        assert_eq!(tensor.to_f32(), expected);
+    }
+
+    #[test]
+    fn explicit_axis_rejects_invalid_shapes_and_nonfinite_channels() {
+        for (shape, axis) in [
+            (vec![2, 2], 2),
+            (vec![2, 2], usize::MAX),
+            (vec![], 0),
+            (vec![0, 2], 1),
+            (vec![usize::MAX, 2], 1),
+        ] {
+            assert!(
+                QuantizedTensor::from_f32_per_channel_axis(&[1.0; 4], shape, axis, false).is_err()
+            );
+        }
+        assert!(QuantizedTensor::from_f32_per_channel_axis(
+            &[1.0, f32::NAN, 2.0, f32::INFINITY],
+            vec![2, 2],
+            1,
+            false,
+        )
+        .is_err());
+    }
 
     // -----------------------------------------------------------------------
     // QuantConfig per-layer selection

@@ -6,11 +6,15 @@
 //! - [`inference::ActivationEstimator`] — run inference to collect activation stats
 
 use crate::errors::{QuantizeError, Result};
-#[cfg(feature = "calibration")]
+#[cfg(any(feature = "calibration", feature = "safetensors-input"))]
 use std::path::Path;
 
 #[cfg(feature = "calibration")]
 pub mod inference;
+#[cfg(feature = "calibration")]
+mod static_quantization;
+#[cfg(feature = "calibration")]
+pub use static_quantization::{quantize_static, quantize_static_matrix};
 pub mod methods;
 pub mod stats;
 
@@ -25,6 +29,34 @@ pub struct CalibrationDataset {
 
     /// Shape of a single sample (excluding batch dimension).
     pub shape: Vec<usize>,
+}
+
+// Check dimensions and byte capacities before deriving offsets or allocating.
+// Rust allocations cannot exceed isize::MAX, even when usize multiplication fits.
+fn sample_elements(shape: &[usize], num_samples: usize) -> Result<usize> {
+    let invalid = || QuantizeError::Calibration {
+        reason: format!(
+            "Invalid dataset shape {shape:?} with {num_samples} samples: dimensions must be \
+             positive and element/byte counts must fit allocation limits"
+        ),
+    };
+    if shape.is_empty() || shape.contains(&0) || num_samples == 0 {
+        return Err(invalid());
+    }
+    let elements = shape
+        .iter()
+        .try_fold(1usize, |n, &d| n.checked_mul(d))
+        .ok_or_else(invalid)?;
+    elements
+        .checked_mul(num_samples)
+        .and_then(|n| n.checked_mul(std::mem::size_of::<f32>()))
+        .filter(|&n| n <= isize::MAX as usize)
+        .ok_or_else(invalid)?;
+    num_samples
+        .checked_mul(std::mem::size_of::<Vec<f32>>())
+        .filter(|&n| n <= isize::MAX as usize)
+        .ok_or_else(invalid)?;
+    Ok(elements)
 }
 
 impl std::fmt::Debug for CalibrationDataset {
@@ -87,7 +119,7 @@ impl CalibrationDataset {
         }
 
         let num_samples = shape[0];
-        let sample_size: usize = shape[1..].iter().product();
+        let sample_size = sample_elements(&shape[1..], num_samples)?;
 
         // `into_raw_vec` returns data in memory order, so the array must be
         // C-contiguous for the per-sample slicing below to be correct.  Move the
@@ -98,13 +130,10 @@ impl CalibrationDataset {
         } else {
             array.as_standard_layout().into_owned().into_raw_vec()
         };
-        let mut samples = Vec::with_capacity(num_samples);
-
-        for i in 0..num_samples {
-            let start = i * sample_size;
-            let end = start + sample_size;
-            samples.push(data[start..end].to_vec());
-        }
+        let samples = data
+            .chunks_exact(sample_size)
+            .map(<[f32]>::to_vec)
+            .collect();
 
         Ok(Self {
             samples,
@@ -204,7 +233,9 @@ impl CalibrationDataset {
                 ),
             });
         }
-        let expected_bytes: usize = shape.iter().product::<usize>() * std::mem::size_of::<f32>();
+        let sample_size = sample_elements(&shape[1..], shape[0])?;
+        // The helper has checked the complete product and byte capacity.
+        let expected_bytes = sample_size * shape[0] * std::mem::size_of::<f32>();
         let raw = view.data();
         if raw.len() != expected_bytes {
             return Err(QuantizeError::Calibration {
@@ -227,14 +258,10 @@ impl CalibrationDataset {
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
 
-        let num_samples = shape[0];
-        let sample_size: usize = shape[1..].iter().product();
-        let mut samples = Vec::with_capacity(num_samples);
-        for i in 0..num_samples {
-            let start = i * sample_size;
-            let end = start + sample_size;
-            samples.push(data[start..end].to_vec());
-        }
+        let samples = data
+            .chunks_exact(sample_size)
+            .map(<[f32]>::to_vec)
+            .collect();
 
         Ok(Self {
             samples,
@@ -246,8 +273,8 @@ impl CalibrationDataset {
     ///
     /// # Errors
     ///
-    /// Returns [`QuantizeError::Calibration`] if shape is empty, `num_samples` is 0,
-    /// or the range is invalid.
+    /// Returns [`QuantizeError::Calibration`] for empty/zero/overflowing shapes,
+    /// zero sample counts, allocation failure, or nonfinite/invalid ranges.
     pub fn random(shape: Vec<usize>, num_samples: usize, range: (f32, f32)) -> Result<Self> {
         if shape.is_empty() || shape.contains(&0) {
             return Err(QuantizeError::Calibration {
@@ -259,10 +286,14 @@ impl CalibrationDataset {
                 reason: "num_samples must be > 0".into(),
             });
         }
-        if range.0 >= range.1 {
+        if !range.0.is_finite()
+            || !range.1.is_finite()
+            || range.0 >= range.1
+            || !(range.1 - range.0).is_finite()
+        {
             return Err(QuantizeError::Calibration {
                 reason: format!(
-                    "Invalid range: ({}, {}) - min must be less than max",
+                    "Invalid range: ({}, {}) - bounds and width must be finite, with min < max",
                     range.0, range.1
                 ),
             });
@@ -270,13 +301,22 @@ impl CalibrationDataset {
         use rand::Rng;
         let mut rng = rand::thread_rng();
 
-        let sample_size: usize = shape.iter().product();
-        let mut samples = Vec::with_capacity(num_samples);
+        let sample_size = sample_elements(&shape, num_samples)?;
+        let mut samples = Vec::new();
+        samples
+            .try_reserve_exact(num_samples)
+            .map_err(|e| QuantizeError::Calibration {
+                reason: format!("Cannot allocate sample list: {e}"),
+            })?;
 
         for _ in 0..num_samples {
-            let sample: Vec<f32> = (0..sample_size)
-                .map(|_| rng.gen_range(range.0..range.1))
-                .collect();
+            let mut sample = Vec::new();
+            sample
+                .try_reserve_exact(sample_size)
+                .map_err(|e| QuantizeError::Calibration {
+                    reason: format!("Cannot allocate calibration sample: {e}"),
+                })?;
+            sample.extend((0..sample_size).map(|_| rng.gen_range(range.0..range.1)));
             samples.push(sample);
         }
 
@@ -287,8 +327,8 @@ impl CalibrationDataset {
     ///
     /// # Errors
     ///
-    /// Returns [`QuantizeError::Calibration`] if `samples` is empty or any
-    /// sample has the wrong length for the given `shape`.
+    /// Returns [`QuantizeError::Calibration`] if `samples` is empty, shape has
+    /// empty/zero/overflowing dimensions, or any sample has the wrong length.
     pub fn from_samples(samples: Vec<Vec<f32>>, shape: Vec<usize>) -> Result<Self> {
         let num_samples = samples.len();
 
@@ -298,7 +338,7 @@ impl CalibrationDataset {
             });
         }
 
-        let expected_size: usize = shape.iter().product();
+        let expected_size = sample_elements(&shape, num_samples)?;
 
         for (i, sample) in samples.iter().enumerate() {
             if sample.len() != expected_size {
@@ -336,6 +376,78 @@ impl CalibrationDataset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_dimensions_are_rejected_before_allocation() {
+        for shape in [
+            vec![],
+            vec![0],
+            vec![usize::MAX, 2],
+            vec![usize::MAX / 4 + 1],
+        ] {
+            assert!(CalibrationDataset::from_samples(vec![vec![]], shape.clone()).is_err());
+            assert!(CalibrationDataset::random(shape, 1, (0.0, 1.0)).is_err());
+        }
+        for count in [
+            usize::MAX,
+            isize::MAX as usize / std::mem::size_of::<Vec<f32>>() + 1,
+        ] {
+            assert!(CalibrationDataset::random(vec![1], count, (0.0, 1.0)).is_err());
+        }
+        for range in [(f32::NAN, 1.0), (0.0, f32::INFINITY), (-f32::MAX, f32::MAX)] {
+            assert!(CalibrationDataset::random(vec![1], 1, range).is_err());
+        }
+    }
+
+    #[cfg(feature = "calibration")]
+    #[test]
+    fn numpy_malformed_shape_headers_return_errors() {
+        // No payload allocation: an overflowing shape and zero-sized sample
+        // dimensions must be rejected even when the header itself is valid NPY.
+        for shape in [
+            format!("({}, 2)", usize::MAX),
+            "(1, 0)".into(),
+            "(0, 2)".into(),
+        ] {
+            let mut header =
+                format!("{{'descr': '<f4', 'fortran_order': False, 'shape': {shape}, }}");
+            let padding = (64 - ((10 + header.len() + 1) % 64)) % 64;
+            header.push_str(&" ".repeat(padding));
+            header.push('\n');
+            let mut bytes = b"\x93NUMPY\x01\x00".to_vec();
+            bytes.extend_from_slice(&(header.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(header.as_bytes());
+            let file = tempfile::NamedTempFile::with_suffix(".npy").unwrap();
+            std::fs::write(file.path(), bytes).unwrap();
+            assert!(
+                CalibrationDataset::from_numpy(file.path()).is_err(),
+                "shape {shape}"
+            );
+        }
+    }
+
+    #[cfg(feature = "safetensors-input")]
+    #[test]
+    fn safetensors_malformed_shape_headers_return_errors() {
+        for shape in [
+            format!("[{}, 2]", usize::MAX),
+            "[1, 0]".into(),
+            "[0, 2]".into(),
+        ] {
+            let mut header = format!(
+                "{{\"input\":{{\"dtype\":\"F32\",\"shape\":{shape},\"data_offsets\":[0,0]}}}}"
+            );
+            header.push_str(&" ".repeat((8 - header.len() % 8) % 8));
+            let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(header.as_bytes());
+            let file = tempfile::NamedTempFile::with_suffix(".safetensors").unwrap();
+            std::fs::write(file.path(), bytes).unwrap();
+            assert!(
+                CalibrationDataset::from_safetensors(file.path()).is_err(),
+                "shape {shape}"
+            );
+        }
+    }
 
     #[test]
     fn test_random_dataset() {

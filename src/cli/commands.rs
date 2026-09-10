@@ -4,9 +4,7 @@ use quantize_rs::config::Config;
 use anyhow::{Context, Result};
 use colored::Colorize;
 #[cfg(feature = "calibration")]
-use quantize_rs::calibration::{
-    methods::CalibrationMethod, ActivationEstimator, CalibrationDataset,
-};
+use quantize_rs::calibration::{methods::CalibrationMethod, CalibrationDataset};
 use quantize_rs::onnx_utils::graph_builder::QdqWeightInput;
 use quantize_rs::onnx_utils::{OnnxModel, SaveOptions};
 use quantize_rs::quantization::{QuantConfig, Quantizer};
@@ -69,37 +67,25 @@ fn quantize_inner(
     p!("  Nodes: {}", info.num_nodes);
     p!();
 
-    p!("Extracting weights...");
-    let weights = model.extract_weights();
-    let original_size: usize = weights.iter().map(|w| w.size_bytes()).sum();
+    let config = QuantConfig {
+        bits,
+        per_channel,
+        symmetric,
+        calibration_method: None,
+        excluded_layers: excluded_layers.to_vec(),
+        min_elements,
+        layer_bits: layer_bits.clone(),
+    };
+
+    p!("Selecting Conv/MatMul/Gemm weights...");
+    let weights = model.select_weights(&config)?;
+    let original_size: usize = weights.iter().map(|w| w.weight().size_bytes()).sum();
 
     if weights.is_empty() {
-        let external = model.count_external_data_initializers();
-        let non_fp32 = model.count_non_fp32_weight_initializers();
-        return Err(if external > 0 {
-            anyhow::anyhow!(
-                "no inline FP32 weight tensors found in '{}': {} initializer(s) store their \
-                 data in an external file (ONNX external-data format); quantize-rs reads only \
-                 inline tensors — re-save the model with weights embedded \
-                 (e.g. `onnx.load(path, load_external_data=True)` then \
-                 `onnx.save(model, out)` without external data) and retry",
-                input,
-                external
-            )
-        } else if non_fp32 > 0 {
-            anyhow::anyhow!(
-                "no FP32 weight tensors found in '{}', but the model has {} non-FP32 \
-                 weight-shaped initializer(s) (FP16, BF16, INT8, etc.); quantize-rs \
-                 currently supports only FP32 input — convert the model to FP32 first",
-                input,
-                non_fp32
-            )
-        } else {
-            anyhow::anyhow!(
-                "no weight tensors found in '{}' — model may be empty or already quantized",
-                input
-            )
-        });
+        return Err(anyhow::anyhow!(
+            "no eligible direct Conv/MatMul/Gemm weights remain after --exclude / --min-elements; \
+             only inline FP32 matrix/tensor weights are supported"
+        ));
     }
 
     p!("✓ Found {} weight tensors", weights.len());
@@ -132,20 +118,8 @@ fn quantize_inner(
         p!("  Min elements:    {}", min_elements);
     }
 
-    let config = QuantConfig {
-        bits,
-        per_channel,
-        symmetric,
-        calibration_method: None,
-        excluded_layers: excluded_layers.to_vec(),
-        min_elements,
-        layer_bits: layer_bits.clone(),
-    };
-
-    // Shared helper: filter, parallel-quantize, honour per-layer overrides.
-    // `weights` is already extracted above — reuse it instead of decoding every
-    // initializer's raw_data into f32 a second time inside quantize_model.
-    let outputs = Quantizer::new(config).quantize_weights(&weights)?;
+    // Selection decodes only eligible initializers; keep the inferred axes.
+    let outputs = Quantizer::new(config).quantize_selected_weights(&weights)?;
 
     let skipped = weights.len() - outputs.len();
     if skipped > 0 {
@@ -320,7 +294,7 @@ pub fn benchmark(original: &str, quantized: &str, format: &str) -> Result<()> {
     let original_weights = original_model.extract_weights();
     let original_size: usize = original_weights.iter().map(|w| w.size_bytes()).sum();
 
-    let quantized_weight_info = quantized_model.load_quantized_info();
+    let quantized_weight_info = quantized_model.try_load_quantized_info()?;
     let is_qdq = !quantized_weight_info.is_empty();
 
     let (quantized_weight_count, quantized_size) = if is_qdq {
@@ -350,14 +324,18 @@ pub fn benchmark(original: &str, quantized: &str, format: &str) -> Result<()> {
     // QDQ adds one DequantizeLinear per quantized weight and removes the
     // weight from `graph.input` (when it appeared there).  Compare against
     // the expected post-transform shape, not the pre-transform shape.
-    let num_dq_nodes = quantized_weight_info.len();
+    let num_dq_nodes = quantized_model.count_nodes_by_op("DequantizeLinear");
+    let num_q_nodes = quantized_model.count_nodes_by_op("QuantizeLinear");
     let expected_quantized_nodes = if is_qdq {
-        original_info.num_nodes + num_dq_nodes
+        original_info.num_nodes + num_dq_nodes + num_q_nodes
     } else {
         original_info.num_nodes
     };
     let expected_quantized_inputs = if is_qdq {
-        original_info.inputs.len().saturating_sub(num_dq_nodes)
+        original_info
+            .inputs
+            .len()
+            .saturating_sub(quantized_weight_info.len())
     } else {
         original_info.inputs.len()
     };
@@ -484,37 +462,10 @@ pub fn calibrate(
     native_int4: bool,
     symmetric: bool,
 ) -> Result<()> {
-    println!("{}", "Calibration-Based Quantization".bold());
-    println!("{}", "=".repeat(60));
-    println!();
-
-    // Parse calibration method
+    if native_int4 || bits != 8 || layer_bits.values().any(|b| *b != 8) {
+        anyhow::bail!("static activation quantization supports INT8 only; use quantize for INT4 or mixed precision");
+    }
     let method: CalibrationMethod = method_str.parse()?;
-
-    println!("Method: {}", format!("{}", method).cyan());
-    if !excluded_layers.is_empty() {
-        println!("Excluded layers: {}", excluded_layers.join(", "));
-    }
-    if min_elements > 0 {
-        println!("Min elements:    {}", min_elements);
-    }
-    if !layer_bits.is_empty() {
-        println!("Layer overrides: {} layer(s)", layer_bits.len());
-    }
-    if symmetric {
-        println!("Symmetric:       true");
-    }
-    if native_int4 {
-        println!("Native INT4:     true (opset 21)");
-    }
-    println!();
-
-    // Load model first so we can auto-detect shape
-    println!("Loading model: {}", input_path);
-    let model = OnnxModel::load(input_path)?;
-
-    // Load calibration data
-    println!("Loading calibration data: {}", data_path);
     let dataset = if data_path.ends_with(".npy") {
         CalibrationDataset::from_numpy(data_path)?
     } else if data_path.ends_with(".safetensors") {
@@ -524,67 +475,11 @@ pub fn calibrate(
         }
         #[cfg(not(feature = "safetensors-input"))]
         {
-            return Err(anyhow::anyhow!(
-                ".safetensors input requires building with --features safetensors-input"
-            ));
+            anyhow::bail!(".safetensors input requires --features safetensors-input");
         }
     } else {
-        // Generate random data for testing
-        println!("⚠  No .npy file provided, using random data for demo");
-        let input_shape = model
-            .input_shapes()
-            .into_iter()
-            .next()
-            .and_then(|dims| {
-                // Strip the batch slot (first dim) BEFORE filtering out
-                // symbolic / non-positive dims.  For a typical HuggingFace
-                // export the first dim is `dim_param` (symbolic batch) and
-                // surfaces as `-1`; filtering first would silently drop the
-                // batch and then strip the channel dim instead.
-                let sample_dims: &[i64] = if dims.len() >= 2 { &dims[1..] } else { &dims };
-                let shape: Vec<usize> = sample_dims
-                    .iter()
-                    .filter_map(|&d| if d > 0 { Some(d as usize) } else { None })
-                    .collect();
-                if shape.is_empty() {
-                    None
-                } else {
-                    Some(shape)
-                }
-            })
-            .unwrap_or_else(|| vec![3, 224, 224]);
-        CalibrationDataset::random(input_shape, 100, (0.0, 1.0))?
+        anyhow::bail!("provide representative calibration data as .npy or .safetensors; random fallback has been removed");
     };
-
-    println!("✓ Loaded {} samples", dataset.len());
-    println!("  Sample shape: {:?}", dataset.sample_shape());
-    println!();
-    println!("✓ Model loaded");
-    println!();
-
-    // Run calibration
-    println!("Running calibration...");
-    let mut estimator = ActivationEstimator::new(model, input_path)?;
-    estimator.calibrate(&dataset)?;
-    println!();
-
-    // Get calibration statistics
-    let calib_stats = estimator
-        .get_layer_stats()
-        .into_iter()
-        .map(|(k, v)| (k, v.clone()))
-        .collect();
-
-    // Extract weights
-    println!("Extracting weights...");
-    let mut model = estimator.into_model();
-    let weights = model.extract_weights();
-    println!("✓ Found {} weight tensors", weights.len());
-    println!();
-
-    // Quantize with calibration — honours the same selection filters as
-    // `quantize` (excluded_layers, min_elements, layer_bits, symmetric).
-    println!("Quantizing with calibration...");
     let config = QuantConfig {
         bits,
         per_channel,
@@ -594,68 +489,47 @@ pub fn calibrate(
         min_elements,
         layer_bits: layer_bits.clone(),
     };
-
-    // Reuse the weights extracted above rather than re-decoding inside quantize_model.
-    let outputs = Quantizer::with_calibration(config, calib_stats).quantize_weights(&weights)?;
-
-    let skipped = weights.len() - outputs.len();
-    if skipped > 0 {
-        println!(
-            "  Skipping {} layer(s) (excluded or below min-elements)",
-            skipped
-        );
-    }
-
-    if outputs.is_empty() {
-        return Err(anyhow::anyhow!(
-            "all {} weight tensor(s) were filtered out by --exclude / --min-elements / \
-             layer_bits; nothing to quantize",
-            weights.len()
-        ));
-    }
-
-    let total_error: f32 = outputs.iter().map(|o| o.mse).sum();
-    let avg_error = if outputs.is_empty() {
-        0.0
-    } else {
-        total_error / outputs.len() as f32
-    };
-    let quantized_data: Vec<QdqWeightInput> = outputs.into_iter().map(|o| o.qdq).collect();
-
-    println!();
-    println!("Results:");
     println!(
-        "  Quantized:     {}/{} tensors",
-        quantized_data.len(),
-        weights.len()
+        "Calibrating INT8 Conv activations from {} samples...",
+        dataset.len()
     );
-    println!("  Avg MSE error: {:.8}", avg_error);
-    println!();
-
-    // Save
-    let save_options = SaveOptions::default().with_native_int4(native_int4);
-    println!("Saving calibrated model...");
-    model.save_quantized_with_options(&quantized_data, output_path, save_options)?;
-    println!("✓ Saved to: {}", output_path.green());
-
-    // Match `quantize`: reload the saved file to confirm it parses and
-    // surface graph-connectivity problems before the user moves on.
-    println!("Validating saved model...");
-    match OnnxModel::load(output_path) {
-        Ok(reloaded) => {
-            let report = reloaded.validate_connectivity();
-            if report.valid {
-                println!("✓ Model validation passed");
-            } else {
-                println!(
-                    "⚠  Saved model has graph connectivity issues:\n{}",
-                    report.summary()
-                );
-            }
-        }
-        Err(e) => println!("⚠  Warning: Could not validate saved model: {}", e),
+    quantize_rs::quantize_static(input_path, output_path, &dataset, config)?;
+    let report = OnnxModel::load(output_path)?.validate_connectivity();
+    if !report.valid {
+        anyhow::bail!("saved model has invalid connectivity: {}", report.summary());
     }
+    println!("Saved calibrated model: {}", output_path);
+    Ok(())
+}
 
+#[cfg(feature = "calibration")]
+pub fn calibrate_matrix(
+    input: &str,
+    data: &str,
+    output: &str,
+    method: &str,
+    excluded: &[String],
+    min_elements: usize,
+) -> Result<()> {
+    anyhow::ensure!(
+        data.ends_with(".npy"),
+        "matrix prototype requires representative FP32 .npy data with shape [samples, K]"
+    );
+    let dataset = CalibrationDataset::from_numpy(data)?;
+    let config = QuantConfig {
+        calibration_method: Some(method.parse()?),
+        excluded_layers: excluded.to_vec(),
+        min_elements,
+        ..QuantConfig::int8()
+            .with_per_channel(true)
+            .with_symmetric(true)
+    };
+    println!(
+        "Experimental MatMul/Gemm calibration from {} samples...",
+        dataset.len()
+    );
+    quantize_rs::quantize_static_matrix(input, output, &dataset, config)?;
+    println!("Saved matrix activation QDQ: {output}");
     Ok(())
 }
 
@@ -725,26 +599,27 @@ pub fn validate(
 
     // QDQ models add DequantizeLinear nodes and may remove weight inputs.
     // Detect QDQ by checking for DequantizeLinear nodes in the quantized model.
-    let quantized_weight_info = quantized_model.load_quantized_info();
+    let quantized_weight_info = quantized_model.try_load_quantized_info()?;
     let is_qdq = !quantized_weight_info.is_empty();
-    let num_dq_nodes = quantized_weight_info.len();
+    let num_dq_nodes = quantized_model.count_nodes_by_op("DequantizeLinear");
+    let num_q_nodes = quantized_model.count_nodes_by_op("QuantizeLinear");
 
     if is_qdq {
-        let expected_nodes = original_info.num_nodes + num_dq_nodes;
+        let expected_nodes = original_info.num_nodes + num_dq_nodes + num_q_nodes;
         if quantized_info.num_nodes == expected_nodes {
             phuman!(
-                "✓ Node count: {} ({} original + {} DequantizeLinear)",
+                "✓ Node count: {} ({} original + {} Q/DQ nodes)",
                 quantized_info.num_nodes,
                 original_info.num_nodes,
-                num_dq_nodes
+                num_dq_nodes + num_q_nodes
             );
         } else {
             phuman!(
-                "⚠  Node count: {} (expected {} = {} + {} DQ nodes)",
+                "⚠  Node count: {} (expected {} = {} + {} Q/DQ nodes)",
                 quantized_info.num_nodes,
                 expected_nodes,
                 original_info.num_nodes,
-                num_dq_nodes
+                num_dq_nodes + num_q_nodes
             );
         }
     } else if original_info.num_nodes == quantized_info.num_nodes {
@@ -760,7 +635,10 @@ pub fn validate(
 
     // QDQ removes weight names from graph.input to avoid "duplicate definition"
     if is_qdq {
-        let expected_inputs = original_info.inputs.len().saturating_sub(num_dq_nodes);
+        let expected_inputs = original_info
+            .inputs
+            .len()
+            .saturating_sub(quantized_weight_info.len());
         if quantized_info.inputs.len() >= expected_inputs {
             phuman!(
                 "✓ Input count: {} (weight inputs removed for QDQ)",

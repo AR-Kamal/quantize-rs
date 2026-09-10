@@ -2,7 +2,13 @@
 //! ONNX model utilities — loading, weight extraction, quantized save (QDQ),
 //! graph connectivity validation, and quantized-model introspection.
 
+#[cfg(feature = "calibration")]
+mod calibrated;
 pub mod graph_builder;
+#[cfg(feature = "calibration")]
+mod matrix_calibrated;
+mod selection;
+pub use selection::SelectedWeight;
 // Internal QDQ node-construction helpers. Kept crate-private: they traffic in
 // raw prost `onnx_proto` types (NodeProto/TensorProto), which are `#[doc(hidden)]`
 // and not part of the stable public API. Use the `OnnxModel` save methods instead.
@@ -505,6 +511,8 @@ impl OnnxModel {
     /// synthesizes.  Without this, loading an already-quantized model and
     /// quantizing it again would quantize the scales and silently corrupt the
     /// dequantization.
+    /// This is raw, rank-based extraction without operator or axis inference.
+    /// Prefer [`select_weights`](Self::select_weights) for model quantization.
     pub fn extract_weights(&self) -> Vec<WeightTensor> {
         let graph = match &self.proto.graph {
             Some(g) => g,
@@ -571,6 +579,16 @@ impl OnnxModel {
         }
 
         weights
+    }
+
+    /// Count standard-domain nodes of an operator type, including activation QDQ.
+    pub fn count_nodes_by_op(&self, op_type: &str) -> usize {
+        self.proto.graph.as_ref().map_or(0, |g| {
+            g.node
+                .iter()
+                .filter(|n| (n.domain.is_empty() || n.domain == "ai.onnx") && n.op_type == op_type)
+                .count()
+        })
     }
 
     /// Total size of all weight tensors in bytes (float32).
@@ -857,27 +875,47 @@ impl OnnxModel {
     ///
     /// Native INT4 zero-point tensors (`DataType::Int4`) are unpacked from
     /// their two-per-byte on-disk layout automatically.
+    ///
+    /// Malformed metadata logs a warning and returns an empty list. Use
+    /// [`try_load_quantized_info`](Self::try_load_quantized_info) to handle errors.
     pub fn load_quantized_info(&self) -> Vec<QuantizedWeightInfo> {
+        self.try_load_quantized_info().unwrap_or_else(|error| {
+            log::warn!("Cannot read quantized metadata: {error}");
+            Vec::new()
+        })
+    }
+
+    /// Read QDQ weight metadata with checked dimensions and payload lengths.
+    ///
+    /// Returns [`QuantizeError::InvalidTensor`] for malformed tensor metadata.
+    /// Missing scale/zero-point initializers retain the legacy scalar defaults.
+    pub fn try_load_quantized_info(&self) -> Result<Vec<QuantizedWeightInfo>> {
         let graph = match &self.proto.graph {
             Some(g) => g,
-            None => return Vec::new(),
+            None => return Ok(Vec::new()),
         };
 
         let mut scale_map: std::collections::HashMap<String, Vec<f32>> =
             std::collections::HashMap::new();
         let mut zp_map: std::collections::HashMap<String, Vec<i8>> =
             std::collections::HashMap::new();
-        let mut quant_bases: Vec<String> = Vec::new();
+        let quant_bases: Vec<String> = graph
+            .initializer
+            .iter()
+            .filter_map(|init| init.name.strip_suffix("_quantized").map(str::to_owned))
+            .collect();
 
         for init in &graph.initializer {
             let name = &init.name;
 
             if let Some(base) = name.strip_suffix("_scale") {
-                scale_map.insert(base.to_string(), decode_scale_tensor(init));
+                if quant_bases.iter().any(|b| b == base) {
+                    scale_map.insert(base.to_string(), decode_scale_tensor(init)?);
+                }
             } else if let Some(base) = name.strip_suffix("_zp") {
-                zp_map.insert(base.to_string(), decode_zero_point_tensor(init));
-            } else if let Some(base) = name.strip_suffix("_quantized") {
-                quant_bases.push(base.to_string());
+                if quant_bases.iter().any(|b| b == base) {
+                    zp_map.insert(base.to_string(), decode_zero_point_tensor(init)?);
+                }
             }
         }
 
@@ -905,18 +943,19 @@ impl OnnxModel {
                     .iter()
                     .find(|i| i.name == format!("{}_quantized", base));
                 let original_length = quant_init
-                    .map(|i| i.dims.iter().product::<i64>() as usize)
+                    .map(expected_element_count)
+                    .transpose()?
                     .unwrap_or(0);
                 let storage_bytes = quant_init.map(|i| i.raw_data.len()).unwrap_or(0);
 
-                QuantizedWeightInfo {
+                Ok(QuantizedWeightInfo {
                     name: base.clone(),
                     bits,
                     scales,
                     zero_points,
                     original_length,
                     storage_bytes,
-                }
+                })
             })
             .collect()
     }
@@ -926,72 +965,90 @@ impl OnnxModel {
 // Helpers for load_quantized_info
 // ---------------------------------------------------------------------------
 
-/// Expected element count for a 1-D or scalar tensor: rank-0 → 1, rank-1 → dims[0].
-fn expected_element_count(init: &crate::onnx_proto::TensorProto) -> usize {
-    if init.dims.is_empty() {
-        1
-    } else {
-        init.dims
-            .iter()
-            .copied()
-            .filter(|&d| d > 0)
-            .product::<i64>() as usize
+fn metadata_error(init: &crate::onnx_proto::TensorProto) -> QuantizeError {
+    QuantizeError::InvalidTensor {
+        reason: format!("Invalid quantized metadata tensor '{}': shape {:?} overflows, has nonpositive dimensions, or disagrees with its payload", init.name, init.dims),
     }
 }
 
-fn decode_scale_tensor(init: &crate::onnx_proto::TensorProto) -> Vec<f32> {
-    let expected = expected_element_count(init).max(1);
+/// Scalar → 1. Positive dimensions must fit the platform allocation limit.
+fn expected_element_count(init: &crate::onnx_proto::TensorProto) -> Result<usize> {
+    init.dims.iter().try_fold(1usize, |n, &d| {
+        usize::try_from(d)
+            .ok()
+            .filter(|&d| d > 0)
+            .and_then(|d| n.checked_mul(d))
+            .filter(|&n| n <= isize::MAX as usize)
+            .ok_or_else(|| metadata_error(init))
+    })
+}
+
+fn decode_scale_tensor(init: &crate::onnx_proto::TensorProto) -> Result<Vec<f32>> {
+    let expected = expected_element_count(init)?;
 
     if !init.float_data.is_empty() {
-        return init.float_data.clone();
+        return if init.float_data.len() == expected {
+            Ok(init.float_data.clone())
+        } else {
+            Err(metadata_error(init))
+        };
     }
 
-    if !init.raw_data.is_empty() && init.raw_data.len() >= 4 * expected {
-        return init
+    if expected.checked_mul(4) == Some(init.raw_data.len()) {
+        return Ok(init
             .raw_data
             .chunks_exact(4)
             .take(expected)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
+            .collect());
     }
 
-    // Malformed or missing — fall back to a safe default so callers can still
-    // report the weight exists without a division-by-zero risk.
-    vec![1.0; expected]
+    // Never allocate defaults from untrusted shape metadata.
+    Err(metadata_error(init))
 }
 
-fn decode_zero_point_tensor(init: &crate::onnx_proto::TensorProto) -> Vec<i8> {
+fn decode_zero_point_tensor(init: &crate::onnx_proto::TensorProto) -> Result<Vec<i8>> {
     use crate::onnx_proto::tensor_proto::DataType;
     use crate::onnx_utils::quantization_nodes::unpack_int4_onnx;
 
-    let expected = expected_element_count(init).max(1);
+    let expected = expected_element_count(init)?;
 
     // Native INT4: raw_data is packed two-per-byte, logical count in dims.
     if init.data_type == DataType::Int4 as i32 {
-        return unpack_int4_onnx(&init.raw_data, expected);
+        return if init.raw_data.len() == expected.div_ceil(2) {
+            Ok(unpack_int4_onnx(&init.raw_data, expected))
+        } else {
+            Err(metadata_error(init))
+        };
     }
 
     // INT8 / widened INT4 / UINT8: raw_data is one byte per value.
     if !init.raw_data.is_empty() {
-        return init
+        if init.raw_data.len() != expected {
+            return Err(metadata_error(init));
+        }
+        return Ok(init
             .raw_data
             .iter()
             .take(expected)
             .map(|&b| b as i8)
-            .collect();
+            .collect());
     }
 
     // int32_data carries int-type scalars when raw_data is absent.
     if !init.int32_data.is_empty() {
-        return init
+        if init.int32_data.len() != expected {
+            return Err(metadata_error(init));
+        }
+        return Ok(init
             .int32_data
             .iter()
             .take(expected)
             .map(|&v| v as i8)
-            .collect();
+            .collect());
     }
 
-    vec![0; expected]
+    Err(metadata_error(init))
 }
 
 // ===========================================================================

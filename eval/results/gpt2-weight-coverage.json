@@ -1,0 +1,4016 @@
+{
+  "scope": "direct-use diagnostic; actual selection verified against CLI export",
+  "initializers": [
+    {
+      "name": "inner.transformer.wte.weight",
+      "shape": [
+        50257,
+        768
+      ],
+      "elements": 38597376,
+      "dtype": "FLOAT",
+      "fp32_bytes": 154389504,
+      "source_tensor_sha256": "c7e1f5e02fadea0191f4eb585dd6d7b40ac0d30c01c9c8720b0c274278fd032e",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/wte/Gather",
+          "operator": "Gather",
+          "domain": "ai.onnx",
+          "input_index": 0
+        }
+      ],
+      "reason": "embedding_or_lookup"
+    },
+    {
+      "name": "inner.transformer.wpe.weight",
+      "shape": [
+        1024,
+        768
+      ],
+      "elements": 786432,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3145728,
+      "source_tensor_sha256": "dcb9993b2d0ffc7d5df1de553a081d4d91ee3452bec289f9cd66f3025010c513",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/wpe/Gather",
+          "operator": "Gather",
+          "domain": "ai.onnx",
+          "input_index": 0
+        }
+      ],
+      "reason": "embedding_or_lookup"
+    },
+    {
+      "name": "inner.transformer.h.0.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "53a8f1ea683d9e0065a94cf6a6514272f39bc636d4fde8844b2868dbe821bc0e",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.0.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "871aac177b1feb25d3df613bcb8783b23c994dc544874ca22037bd78ea6c9ce6",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.0.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "221e1dee1d760f3c1571dbe8bbcaca42d032d3880632ecc16739747587305fce",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.0.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "88ec6a989498f29cd69f891c81639c4b017b8f04875da5fca5b6606e18d0151d",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.0.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "c148fdd67a9876e8d9840bb253a955e94b39e7464c3801abd32577ef92c2d048",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.0.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "343c2f92c534219eec543dfb0295aa8a0b211339e7a57c271164b4935aa32abd",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.0.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "fa59cead6aa7c8f40a78cf88dba376d26f1d773908ab927ffb4f5508da9b802b",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.0.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "13dbee923a59e166d63fc5fc78a26e09dc02708e84fc6c7b32d472e7087cf21b",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.0.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "8dd836a986940a861c14e52316ce3b2868799c93d7008fb16a7233c1f5e30233",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.0.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "c05a42f325de4cd0cadcc36b2f65d7d34eb4669dd54fdb6366e158ea4ee3f1ae",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.0.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "2cd7a484dac2a393110e5e083123896723b39d6f60d715a962a28b463cc58e98",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.0.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "0fa683334b574a8ded6c5e1be7d74c3e3dfa2d5b2c886eed2f2332478299f886",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.0/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.1.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "0e829875239db33baddd412d892ce56c3bfaa7a4170bfc437af4efb3bfe33ad2",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.1.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "8d586dac56b1013d8400a3ffae99422d5741b593c13baa1fbbeb594187d67445",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.1.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "fd40b62a444502db2099a99da7dcac43a6ed18531818ca497e7bfb3ca75741d0",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.1.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "1c0a622035a497af622e57492d566f4e3c80dba6ff38bc3a08d0a2717dc84bc9",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.1.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "86c347a1da102d483c3887451797736a3b4196c1139e479b81d4490d8b003902",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.1.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "808b6020780c9417a79705c9e0381c8644659648714096a821a2ef67373d676a",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.1.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "5294e8c0ea20a868ff7b39b01103806285b9dacd831df9ad044fbdda4b1bdb58",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.1.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "829c961afd357aa9cfc644335185b1bd0bc47f75d37d75cd2fb7332f529508ff",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.1.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "2b8a241048db7fb037248066d3c5a4d7a1139a430b61f8b1b91cc278c25379b0",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.1.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "b2a7bbd51b53842998f96b3310b137355158a9f97374e8f12b209e9ce90daca5",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.1.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "ed3c24f132462e7e34a950fb78e4e104dc90aea661980352356e111886ab11e4",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.1.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "4aede0b34225dbb505068721705bd6ab7b2e8cdc89b0f192de0cae099170def4",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.1/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.2.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "b2c2e04af139fb802066e23c84c9f33835ea7752729023d626e8386441b27a87",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.2.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "adcabc035a6bdf68241aec5bf138f67b41e9c542dedf6d5a4d19b05268e1276c",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.2.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "df50ac8afb1a521c97c7160ecb12165280e9aad554b72adf15f666543daa9244",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.2.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "0d28f04b686e48de42ab0d08fd5a1be74e661e9586ea08f92d18bb3377cfaf80",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.2.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "0a072f329c24dad8474cb67dae8e609f3242c556c54d44476bb76822c9872f7e",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.2.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "400cac0ac8c99ef5395b31d50e6948c0ab221bf885eaf5e0848a000ad17e3232",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.2.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "5323bcfd77dde2e5d6b90ec61d156593d461079ca42cae2703fc538cdf59c5f3",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.2.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "315856644178930bd3a763b553e636c54cfa3f307420928616334fac18351c07",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.2.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "8d9f8fad70abcc706629d0c4083024f59ea1dcac2b3a06bfee1ba02e3e03ea5a",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.2.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "4278251294c6d96061f5e7d83073f8095379e95520515f783d022a2eacad3df9",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.2.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "f28bc4108dc97428effd3b3bdad476d544b59fe9b3c2677887e86a449eb70b29",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.2.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "1475624c9ef1bfaa61192cd863911f4548934fc86954638ee7410c23164c3d9b",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.2/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.3.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "53e058323a784469036685f8e77ffb67d02d9f887bcd6170ed363adc0599b0c8",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.3.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "7caf9f77bf500570851e8631c76091b19536c32e45bf640466dc518380b48634",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.3.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "9457a404fff41852f5f5cf414fc6c07265c77aa78536a7fea5d3bbe6e061d5b5",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.3.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "ad0220c962bc2811bc0bcf1a51bfe6735fff8b0719eab28e1dff1060aee7277a",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.3.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "acbce86d71aeb122461079846f756594e6fd28d8c2e64e6b9a78f3c999b0c8fa",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.3.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "2e73bae9ef500f629e318542e944165f466b66eccd1e91cd892979103cb65562",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.3.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "6d9405d5df018512cd0d41f2e56d6ffb63fb1e3ba588369f260bac036c39bb78",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.3.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "8d442697ffd35f89c09c0bf5c1789c6eadd124e6e9939d6ef42d7d7201cad10b",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.3.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "2a193bad857cc17b94622936031fdb95c2f0b57ea4f0bfd7e2245339f8d87043",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.3.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "6de6df3e2be07022461525e42150ff60f436d1e31b81bdfe331142b34b08f468",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.3.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "811658c782b445d9f50b56625b53eefee20ed80eca79e8e23d7af7eab7394efd",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.3.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "dbaf1742334d8983c0c0948fae3eb95d1e8cf2b61b9c5703b570dffd690903b7",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.3/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.4.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "b38d773bf9172bf9f052c0b615ec10c8154af00ead6e31efe8298a3bb959d8e0",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.4.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "c066e69dccb31dafa811076e38e32e013733032423e3bb597ca5489a559d4d5c",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.4.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "68d29684a9df6d7e681052eb88b7c78faeb991d2c0855224f22b13bb12c1fd26",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.4.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "e405b18311034b15bef6f3c0ce369270e6d93a2304bc792e50f7a1847dd259ac",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.4.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "008ce0c173f4bd7954d8bc3c95d766c4f2b69764397b45f54cc3f4657d57fc8d",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.4.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "8edcdb979125f8160cc12d46c953b19182d38ba0c6cf85b21bf9b9a3eff35d8c",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.4.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "0c14bb43cf202df35fd155d1e448bdc5d5cce0ed24247c94bc2c52300da51bd7",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.4.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "ac8c475eeaa58619af461ec44b39a0b1164332cee7bac9cbed9fd2b7f6089428",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.4.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "0c7b5ae8db196c26d55bee7d775e6d1a46fb828af8016116478937322a6aaab6",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.4.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "237d35b5005585087179d336cf9903fd8ac4b375a802de23ba7ec9b90bc8f948",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.4.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "d879e94130fabbf4b47890cf11680aab877c5e50d5d15d35044283589ad3adca",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.4.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "431d2c5357cab9d87353d185edbcaa34de3aab28c23ca5c8c48eb1c8387b91a6",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.4/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.5.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "a893d378d5a51cfcd4ac2c157a838ec3a076814dc8d73d1af05b3d2c9c509324",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.5.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "ed0d638deeddbaceed335384da2825b2c85e613692258495b8758ed27787f655",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.5.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "5ddea42b70c39dba8e6d0755dd66c526b07009e6b1ee33f7a52c8f859216fd5f",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.5.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "99854b3733a977d7eb5c69642a8a12875b1a4707efcc385abe55a4b42c4d57d7",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.5.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "952a5d2b56a26c9010c84d92a3f5665be4b3cb2156115b2c7c68cabc716d3a6e",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.5.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "c5e01524e06abad0e00b9eed49f60b7226585ca12e83427c2bd3182235dbbb66",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.5.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "33d59d3f1f3ec1f2749734c23228e6928289d045c8e3e0582b91d845b602c4de",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.5.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "1b3bb835f394f2bd41d4ba9529bfef7a91c75aea564ed6f007c9c87960cc97ee",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.5.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "c49b79715ab0c80cf6050db2591647a83426e37ae534c54bd0b7c6f6823b64f1",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.5.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "eccc77a8bccd39f2b5e6e763eb32e8c485a72804a89faa9d2f634d09d9d943e6",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.5.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "1b19ed7e26dc6f3066a9c733eccb3074f6ad1311b6c64f478ee1262f1a39666a",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.5.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "fcb52a3c6f63fb2a520a013ba462c7ac3e5add1dcc0708e9ee6c7b33431883a0",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.5/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.6.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "c014f415849948f34fb75c6488a2d66ac3e5dcf602fadab17b1a9df3a4fe61ba",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.6.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "d9223fff89d00b9e17516551c40ad6c44fa1a0a1a7c8074436be7b68a84b354d",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.6.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "de3cb11b3cd62e2dbfd84ac37a9832b2b5acc1672dfe219e6222282982ea6cda",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.6.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "6c452b969e2558f3c920f3ffed204a5cee552dbf354553066604b8a9ba680c99",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.6.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "0b35dc5c8850aa0177aac0c246d9e883973828121cd4d796b4fcda9470d319fb",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.6.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "ef16650256a292ed523c41ad29f7c19386c42c7be9dd1d02bebf2e5317f455ab",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.6.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "a33bf2c80d4a5bdbf09f0f649b5434bdf8ef979e06cdd24652d7d9bf2c5d1199",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.6.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "67d9e4d69faae4cf2970f4e885769c5acfc13c6e3ecbd928284393b8454d56a6",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.6.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "0668a3fd97d1c7b02d6e3911c6bb8b20e282ecdbd35b290d0aab578cfc14016c",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.6.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "e4b0e26239fd445d5d2346b72d3dbffbf48333a5f8f171cdf0910c17e615eb86",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.6.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "dadeed091893624b6a796433fb1a90d3500d5771781858e7e47b2d8b50ca8811",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.6.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "1cab05a7ed4243b6a974dbb200e234c20a859fe6fb9e5f77b089414217449447",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.6/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.7.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "844b0b186a0c5c17a4d2f7f385bb5ba1d041f417d52cd330f549b88abf5ae33c",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.7.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "8d2ad0f04f185fe71fab6bb37b7819cb94d2016fadf6d4e8a3fb5748f1942539",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.7.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "8c099670c19a8625fb340d92d6e18d3b7796f150a80f0cd43c455512798aedfa",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.7.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "3093a2ffff8b6b6361da6e8bf561f1e6846848079b264073cae1a7446b719d4b",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.7.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "58f12d77670385c601297c98364e4975e61e0e253bc18106747c748810037065",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.7.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "24bd08d996a9a0fa0599e6cfa22ba4d71988d9614480c56ceb5cf669e02bd19b",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.7.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "32467907f426b056b1a82ee556829ec01a293365d1539ed45e6cdb92d0439755",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.7.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "14af2cde06537f8858a69d12d3c230c1af150b60deb748561ec126d547dbf143",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.7.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "1701b6981f97d93a1bffa7d71f4c17bc92489096bd789a57e1f5cfd50b6e9a63",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.7.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "42af4b02cb6b852dc90d5158ea869b64fb5a14c829207e8ae92fd349cd2276a9",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.7.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "ac35a2431b9ddaf83827cec01cecbf667931dc4e18422db32ad8d2bcb20d0032",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.7.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "3d929becbc360c4016f2c93f6e8ea05297f8118c8684771203bda04ff14f97f7",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.7/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.8.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "704d2e4f4ba80255215acd6c22ff5e3acbb8e17a766a631de4cf0b0cc801d4ff",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.8.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "aaf3ba0a6043e7a8e447a06e44cfc9fc59a4abbd3dd9bc510c8c0c61f8fd50e8",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.8.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "ce213007e4859d9f22eee7fa669a34f4e102aacd0f73fa051480545c975c03f3",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.8.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "823ca5062c8b63b45f6871556b5d8714f20adbb38d0d35fca1c9d173267a3852",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.8.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "47883dac19155b42ca5ea783a1b7e0f4dbb5a84487ea7ef1f2393af845604197",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.8.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "15938c8b89fd4a4220b463f0a0ffa5bb5d4c010b53d68caba58be43a5ff2c00f",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.8.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "c41aaad85e35ceffd76510042126425c099445bb3559dac452547624b1af846d",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.8.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "d28571035da337dc98ece386d722e6533a59a32e6dd488ed984373351f625b39",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.8.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "fab2c8ca2a9dc5ecba2ab416f23dc47752ec0e4d41180acd0d4ae465eaf62e6f",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.8.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "d95acd5f2983a9412f2c232c623eb3952e25c1ee4a091d8e34f424899812b18d",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.8.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "48881525036bae75a96734aefe499a7209561732f6dfed936e2f9d8a2d6f9cfc",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.8.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "35e4b35084062965e6b0f23a9e35d837f5845f07a28accc2885e48500ffe230d",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.8/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.9.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "99848fb1be54fb378b51fcf1aa0d0c4b057ccd9f32f141db425882f828682aff",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.9.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "b6becb0567e03e09ed206d1ec2f18538909878618161ea44f7438a7918d95011",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.9.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "00c5196c0f22e98e5cc7c23c76162c52acee982c2885b1145a06a56ca4cf47de",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.9.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "1919bb24bd72d51fc476e9c0b48cf78b73cc9204dd341b8f7596073fec7505a5",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.9.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "4bf2507a62e910f5dc4a6f3b5d4ac7e3b8c70e61ed87f928e39828004b8e2635",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.9.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "b2a4a7d36eaa13058ef6d0025a116e05a7e752bed87548da9bdf7ee876c16628",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.9.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "fdd07256e6fa8c2e77c872a7407f17ce4206b8b53b6fe0a04e0908157e490088",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.9.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "0bf8a9692220d94e7562edc63291ab6673edaf66494a02e384fc967338be7fd9",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.9.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "9f7bc2281de29f8a5a4160d745edd099feb0204737a121ac0e798a4c0ed9f72d",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.9.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "f5348b6309a017a56de8e9a61aaae132e9eaf8d47d7b481750306235e25bec85",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.9.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "5804ee70c1add8a146e23620c3d8f8beb87abae2400785fd716910b15d2cf9f7",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.9.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "e813de78ff6b74a3d5c2ddce9ec349b69d2957d6683419fc2948f477869b0f8e",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.9/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.10.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "bebf822cfd3dec0582876de07d588b69b22c76adc92bc3fe421de0fcfa2440ea",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.10.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "02df31224eb49baff19b8adad7e780cb5c30787b0c480ad40206decb4807a9e7",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.10.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "c9aa392f01933ee510179113e3349b84bfebc457b2d091cb18882e38ab01bc37",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.10.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "d1cf9ee229ce3d211b3f92f6b2cc85bbc0302e58cec57ee3f7acdc99730b8daa",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.10.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "d3f5e689d85842e5a928d78fc993a06f765d5c8d893103995e90fe12fa322616",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.10.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "2306feb5928b820229d0dd70d5820fe0de99330c4694a4abde2057748353d62e",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.10.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "4a4b89c5080338e248a27a5a6adecf200755d3466d7abf52339e153640a29d90",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.10.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "d68ae245db6b8723e436b897c9986150a13d42fa6e16225ff4601ad07fa597da",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.10.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "8d0ef1782f853d61736b21c3812ccfbfdc58189db1aeb86951b2d920b32b8151",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.10.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "d6051a0e9f6002ec64111b9e66bc97693c23d7563b0bca555edcb27e678331fd",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.10.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "5c56a34c3a6305fbaa02df6e917828345583ae08780878c5b8d2ea8d93de9708",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.10.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "4820c22136c107ce6cd8655dbcb99177212ffe5a20bdd5003fd1b634c9e5f2a4",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.10/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.11.ln_1.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "57319905aee6ee6795074d304efe6413a79cc882e6acaf88d7b1d46af00fe679",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/ln_1/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.11.ln_1.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "264d5c77c96121f093c19e3171f383b339522befc382bea6a6beef4aed7c743d",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/ln_1/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.11.attn.c_attn.weight",
+      "shape": [
+        768,
+        2304
+      ],
+      "elements": 1769472,
+      "dtype": "FLOAT",
+      "fp32_bytes": 7077888,
+      "source_tensor_sha256": "829d991dec72990c20db89033529fc0c216a0ba32baf33209f5e84e3dd0578fd",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.11.attn.c_attn.bias",
+      "shape": [
+        2304
+      ],
+      "elements": 2304,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9216,
+      "source_tensor_sha256": "fbaa258d37354a5e231b1ad648e94eb1a5472b09666d4857912c3d18ce1b2695",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/attn/c_attn/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.11.attn.c_proj.weight",
+      "shape": [
+        768,
+        768
+      ],
+      "elements": 589824,
+      "dtype": "FLOAT",
+      "fp32_bytes": 2359296,
+      "source_tensor_sha256": "8215bf783fe7bf234905c0460b733c1207f3761665fa769838027cdad3fdbaa3",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.11.attn.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "605c1e6483976673e9114a7ab54426599c345fffce7e20506ef5d9abd16248b2",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/attn/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.11.ln_2.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "236c7fde57c980a3b9ad556268dac10e1889719a28ede11c23fa2682e6eb0e53",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/ln_2/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.11.ln_2.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "3abf7058129dde40d4a9c667ba847f4ef71b38093726d7dfcc6ab194dc87bcf2",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/ln_2/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.11.mlp.c_fc.weight",
+      "shape": [
+        768,
+        3072
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "9a34c026f0726368cf4a198b9d736f224db11534f371f79016731bd9ecaefc90",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.11.mlp.c_fc.bias",
+      "shape": [
+        3072
+      ],
+      "elements": 3072,
+      "dtype": "FLOAT",
+      "fp32_bytes": 12288,
+      "source_tensor_sha256": "2a5d52d85a83d0767a71810038ccac36bf54bdd26019fd3619f870d1384899b5",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/mlp/c_fc/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.h.11.mlp.c_proj.weight",
+      "shape": [
+        3072,
+        768
+      ],
+      "elements": 2359296,
+      "dtype": "FLOAT",
+      "fp32_bytes": 9437184,
+      "source_tensor_sha256": "de6d523b8c7e4d60ecdd87e738f5eb1aa018f987491162244bf5671280468701",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    },
+    {
+      "name": "inner.transformer.h.11.mlp.c_proj.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "6bf2dd644e5d5afbe6c3ce3820a613f394d9300fe425c934c2d882536af49237",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/h.11/mlp/c_proj/Gemm",
+          "operator": "Gemm",
+          "domain": "ai.onnx",
+          "input_index": 2
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.ln_f.weight",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "bc8dd3e8f4df847709f4924ab8f18c17875a605e0849b0b6716c4f23f219d2d8",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/ln_f/Mul",
+          "operator": "Mul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "inner.transformer.ln_f.bias",
+      "shape": [
+        768
+      ],
+      "elements": 768,
+      "dtype": "FLOAT",
+      "fp32_bytes": 3072,
+      "source_tensor_sha256": "280c13ca256a818fd75266a88ed409694a8dfca67a4ad51cd5401d4ae5822556",
+      "status": "skipped",
+      "axis": null,
+      "consumers": [
+        {
+          "node": "/inner/transformer/ln_f/Add_1",
+          "operator": "Add",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "reason": "rank_below_2"
+    },
+    {
+      "name": "onnx::MatMul_3311",
+      "shape": [
+        768,
+        50257
+      ],
+      "elements": 38597376,
+      "dtype": "FLOAT",
+      "fp32_bytes": 154389504,
+      "source_tensor_sha256": "565902f5ea665c1d5d82aae3d6bc033c1c3d7789744d8a432243fc2a4451488a",
+      "status": "selected",
+      "axis": 1,
+      "consumers": [
+        {
+          "node": "/inner/lm_head/MatMul",
+          "operator": "MatMul",
+          "domain": "ai.onnx",
+          "input_index": 1
+        }
+      ],
+      "consumer_axes": [
+        1
+      ],
+      "reason": "supported_direct_weight"
+    }
+  ],
+  "matrix_operators": [
+    {
+      "node": "/inner/transformer/h.0/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.0.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.0.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.0/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.0/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.0/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.0/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.0/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.0.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.0.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.0/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.0.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.0.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.0/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.0.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.0.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.1/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.1.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.1.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.1/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.1/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.1/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.1/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.1/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.1.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.1.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.1/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.1.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.1.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.1/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.1.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.1.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.2/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.2.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.2.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.2/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.2/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.2/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.2/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.2/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.2.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.2.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.2/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.2.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.2.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.2/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.2.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.2.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.3/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.3.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.3.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.3/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.3/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.3/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.3/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.3/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.3.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.3.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.3/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.3.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.3.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.3/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.3.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.3.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.4/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.4.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.4.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.4/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.4/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.4/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.4/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.4/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.4.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.4.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.4/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.4.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.4.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.4/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.4.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.4.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.5/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.5.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.5.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.5/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.5/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.5/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.5/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.5/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.5.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.5.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.5/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.5.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.5.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.5/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.5.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.5.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.6/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.6.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.6.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.6/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.6/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.6/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.6/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.6/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.6.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.6.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.6/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.6.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.6.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.6/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.6.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.6.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.7/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.7.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.7.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.7/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.7/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.7/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.7/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.7/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.7.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.7.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.7/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.7.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.7.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.7/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.7.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.7.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.8/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.8.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.8.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.8/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.8/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.8/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.8/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.8/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.8.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.8.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.8/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.8.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.8.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.8/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.8.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.8.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.9/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.9.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.9.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.9/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.9/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.9/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.9/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.9/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.9.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.9.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.9/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.9.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.9.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.9/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.9.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.9.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.10/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.10.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.10.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.10/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.10/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.10/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.10/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.10/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.10.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.10.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.10/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.10.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.10.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.10/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.10.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.10.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.11/attn/c_attn/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.11.attn.c_attn.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.11.attn.c_attn.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.11/attn/MatMul",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.11/attn/Transpose_2_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.11/attn/MatMul_1",
+      "operator": "MatMul",
+      "rhs": "/inner/transformer/h.11/attn/Transpose_output_0",
+      "kind": "dynamic_or_unresolved",
+      "initializer": null,
+      "transforms": [
+        "Transpose",
+        "Reshape"
+      ]
+    },
+    {
+      "node": "/inner/transformer/h.11/attn/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.11.attn.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.11.attn.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.11/mlp/c_fc/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.11.mlp.c_fc.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.11.mlp.c_fc.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/transformer/h.11/mlp/c_proj/Gemm",
+      "operator": "Gemm",
+      "rhs": "inner.transformer.h.11.mlp.c_proj.weight",
+      "kind": "direct_initializer",
+      "initializer": "inner.transformer.h.11.mlp.c_proj.weight",
+      "transforms": []
+    },
+    {
+      "node": "/inner/lm_head/MatMul",
+      "operator": "MatMul",
+      "rhs": "onnx::MatMul_3311",
+      "kind": "direct_initializer",
+      "initializer": "onnx::MatMul_3311",
+      "transforms": []
+    }
+  ],
+  "summary": {
+    "initializer_count": 149,
+    "status_counts": {
+      "skipped": 100,
+      "selected": 49
+    },
+    "skipped_reasons": {
+      "embedding_or_lookup": 2,
+      "rank_below_2": 98
+    },
+    "fp32_matrix_elements": 162915840,
+    "fp32_matrix_bytes": 651663360,
+    "selected_elements": 123532032,
+    "selected_fp32_bytes": 494128128,
+    "selected_axis_counts": {
+      "1": 49
+    },
+    "matrix_rhs_counts": {
+      "direct_initializer": 49,
+      "dynamic_or_unresolved": 24
+    }
+  },
+  "model_sha256": "600e17f4410b425b50d53611b3b6c2ffc88be304dc3677275e50211800adb06b",
+  "min_elements": 0,
+  "excluded": [],
+  "verified_against_cli_output": true
+}

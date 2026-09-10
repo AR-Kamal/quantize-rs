@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "timestamp_utc": "2026-09-09T21:04:26.812582+00:00",
+  "source_model": {
+    "sha256": "600e17f4410b425b50d53611b3b6c2ffc88be304dc3677275e50211800adb06b",
+    "provenance": "local ONNX export; hash-pinned; export provenance is not inferred from filename"
+  },
+  "data": {
+    "dataset": "Salesforce/wikitext",
+    "configuration": "wikitext-2-raw-v1",
+    "split": "test",
+    "assets": {
+      "test.parquet": {
+        "url": "https://huggingface.co/datasets/Salesforce/wikitext/resolve/b08601e04326c79dfdd32d625aee71d232d685c3/wikitext-2-raw-v1/test-00000-of-00001.parquet",
+        "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+        "sha256": "5f1bea067869d04849c0f975a2b29c4ff47d867f484f5010ea5e861eab246d91"
+      },
+      "vocab.json": {
+        "url": "https://huggingface.co/openai-community/gpt2/resolve/607a30d783dfa663caf39e06633721c8d4cfcd7e/vocab.json",
+        "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+        "sha256": "196139668be63f3b5d6574427317ae82f612a97c5d1cdaf36ed2256dbf636783"
+      },
+      "merges.txt": {
+        "url": "https://huggingface.co/openai-community/gpt2/resolve/607a30d783dfa663caf39e06633721c8d4cfcd7e/merges.txt",
+        "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+        "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5"
+      }
+    },
+    "rows": 4358,
+    "text_join": "all rows joined with two newlines; no stripping/filtering; no special tokens",
+    "full_test_tokens": 287644,
+    "evaluated_prefix_tokens": 32768,
+    "token_ids_sha256": "8af3caaa0a03f18025096b0ae02a4fcf47e24858500c3718332d484c8a55e19f",
+    "full_test_text_sha256": "696cca6b65a171b0a358a4be6732cdfdf2dd6164a32e20fd70e3c13fc4dfae83",
+    "tokenizer": "tokenizers.ByteLevelBPETokenizer; add_prefix_space=False"
+  },
+  "settings": {
+    "tokens": "tokens.npy",
+    "context": 256,
+    "stride": 128,
+    "threads": 1,
+    "latency_runs": 40,
+    "bits": 8,
+    "per_channel": true,
+    "symmetric": true,
+    "min_elements": 0,
+    "excluded": [],
+    "provider": "CPUExecutionProvider",
+    "inter_op_threads": 1,
+    "latency_scope": "batch-1 full forward at fixed context, no KV cache; preprocessing/loading/profiling excluded; 5 warmups"
+  },
+  "thresholds": {
+    "max_ppl_increase_percent": 3.0,
+    "max_baseline_ppl": 100.0
+  },
+  "binary_sha256": "0c3f75e7f440847d46d0a51b8c8ef51db4f24c5712b61efcac6355da9edd029d",
+  "quantization_performed_in_this_run": true,
+  "coverage_summary": {
+    "initializer_count": 149,
+    "status_counts": {
+      "skipped": 100,
+      "selected": 49
+    },
+    "skipped_reasons": {
+      "embedding_or_lookup": 2,
+      "rank_below_2": 98
+    },
+    "fp32_matrix_elements": 162915840,
+    "fp32_matrix_bytes": 651663360,
+    "selected_elements": 123532032,
+    "selected_fp32_bytes": 494128128,
+    "selected_axis_counts": {
+      "1": 49
+    },
+    "matrix_rhs_counts": {
+      "direct_initializer": 49,
+      "dynamic_or_unresolved": 24
+    }
+  },
+  "coverage_sha256": "be694bc7e2665f7d0cfb39cf9ad34c59074316441e6c4418e708297673478356",
+  "environment": {
+    "python": "3.13.7 (tags/v3.13.7:bcee1c3, Aug 14 2025, 14:15:11) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "packages": {
+      "numpy": "2.4.2",
+      "onnx": "1.20.1",
+      "onnxruntime": "1.22.1",
+      "tokenizers": "0.22.2",
+      "pyarrow": "22.0.0",
+      "psutil": "6.1.1"
+    }
+  },
+  "implementation_sha256": {
+    "gpt2_evaluation.py": "d478746356f70fcc7be08eacd28f671832edaf7cd0d18f3c7941ab35f3e451bb",
+    "weight_coverage.py": "f3a26c47287d954b952c6103a96c78f00f88a989b0c9790ac63ba18727b8aef9"
+  },
+  "variants": {
+    "fp32": {
+      "model_sha256": "600e17f4410b425b50d53611b3b6c2ffc88be304dc3677275e50211800adb06b",
+      "model_bytes": 652613039,
+      "perplexity": 36.670399970151244,
+      "negative_log_likelihood_sum": 118025.74736298903,
+      "scored_targets": 32767,
+      "windows": 255,
+      "latency_median_ms": 2487.27155,
+      "latency_p95_ms": 2842.7846399999994,
+      "latency_runs": 40,
+      "latency_input_shape": [
+        1,
+        256
+      ],
+      "optimized_vs_unoptimized_max_abs_error": 0.00030517578125,
+      "parity_atol": 0.001,
+      "parity_rtol": 0.0001,
+      "profiled_kernel_counts": {
+        "Reshape": 151,
+        "Gather": 129,
+        "Shape": 79,
+        "Range": 2,
+        "Unsqueeze": 180,
+        "Add": 39,
+        "LayerNormalization": 25,
+        "Concat": 113,
+        "Slice": 64,
+        "Squeeze": 61,
+        "Gemm": 48,
+        "Split": 12,
+        "Transpose": 48,
+        "Cast": 13,
+        "Pow": 12,
+        "MatMul": 25,
+        "Div": 12,
+        "Equal": 3,
+        "Where": 2,
+        "Sub": 2,
+        "Not": 1,
+        "CumSum": 1,
+        "Mul": 1,
+        "Flatten": 1,
+        "LessOrEqual": 1,
+        "And": 2,
+        "Expand": 1,
+        "Softmax": 12,
+        "FastGelu": 12
+      },
+      "profiled_matrix_input_types": {
+        "Gemm:float": 48,
+        "MatMul:float": 25
+      },
+      "profile_sha256": "7783b9ca7e329edd81af6562ac34beb16b2410ba6044d5d710ad1fa2d4bff513",
+      "baseline_rss_mib": 36.91796875,
+      "session_rss_mib": 627.04296875,
+      "process_peak_rss_mib": 1197.34765625
+    },
+    "int8": {
+      "model_sha256": "f3be8422b87f7e172e5e845475ccafc3a405950084594cf2ed5ba6bcfce5e950",
+      "model_bytes": 282705343,
+      "perplexity": 37.26341335587109,
+      "negative_log_likelihood_sum": 118551.39822424017,
+      "scored_targets": 32767,
+      "windows": 255,
+      "latency_median_ms": 4653.1516,
+      "latency_p95_ms": 5525.134574999999,
+      "latency_runs": 40,
+      "latency_input_shape": [
+        1,
+        256
+      ],
+      "optimized_vs_unoptimized_max_abs_error": 0.000431060791015625,
+      "parity_atol": 0.001,
+      "parity_rtol": 0.0001,
+      "profiled_kernel_counts": {
+        "Reshape": 151,
+        "Gather": 129,
+        "Shape": 79,
+        "Range": 2,
+        "Unsqueeze": 180,
+        "Add": 39,
+        "LayerNormalization": 25,
+        "Concat": 113,
+        "Slice": 64,
+        "Squeeze": 61,
+        "DequantizeLinear": 49,
+        "Gemm": 48,
+        "Split": 12,
+        "Transpose": 48,
+        "Cast": 13,
+        "Pow": 12,
+        "MatMul": 25,
+        "Div": 12,
+        "Equal": 3,
+        "Where": 2,
+        "Sub": 2,
+        "Not": 1,
+        "CumSum": 1,
+        "Mul": 1,
+        "Flatten": 1,
+        "LessOrEqual": 1,
+        "And": 2,
+        "Expand": 1,
+        "Softmax": 12,
+        "FastGelu": 12
+      },
+      "profiled_matrix_input_types": {
+        "Gemm:float": 48,
+        "MatMul:float": 25
+      },
+      "profile_sha256": "e2a9480e0159eb30591abefe06b1513b8b73709ad4093768ed8df1b26accd2f4",
+      "baseline_rss_mib": 36.91796875,
+      "session_rss_mib": 405.875,
+      "process_peak_rss_mib": 862.85546875
+    }
+  },
+  "status": "passed",
+  "gate": {
+    "passed": true,
+    "relative_perplexity_increase_percent": 1.6171445803769169,
+    "maximum_increase_percent": 3.0,
+    "maximum_baseline_perplexity": 100.0,
+    "scope": "bounded regression thresholds chosen before measurement; not universal quality guarantees"
+  }
+}

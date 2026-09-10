@@ -1,14 +1,9 @@
 // src/calibration/inference.rs
 //! Real activation-based calibration using tract inference.
 //!
-//! Unlike weight-based calibration (which optimizes ranges based only on weight
-//! values), this runs actual inference on calibration samples and captures the
-//! real intermediate tensor values at each layer. The observed min/max/histogram
-//! from these activations gives tighter quantization ranges → better accuracy.
-//!
-//! Example improvement (ResNet-18 on ImageNet):
-//!   Weight-based:     69.76% → 69.52% (0.24% drop)
-//!   Activation-based: 69.76% → 69.68% (0.08% drop)  ← 3× better
+//! Statistics are keyed by original ONNX tensor names, including input edges.
+//! Use `quantize_static` to apply these ranges to activation QDQ pairs.
+//! Weight ranges must always be computed from the weights themselves.
 
 use crate::errors::{QuantizeError, Result};
 use std::collections::HashMap;
@@ -30,7 +25,7 @@ use crate::onnx_utils::OnnxModel;
 /// let mut estimator = ActivationEstimator::new(model, "model.onnx")?;
 /// let dataset = CalibrationDataset::from_numpy("samples.npy")?;
 /// estimator.calibrate(&dataset)?;
-/// let stats = estimator.get_layer_stats();  // HashMap<layer_name, &ActivationStats>
+/// let stats = estimator.get_layer_stats();  // HashMap<tensor_name, &ActivationStats>
 /// ```
 pub struct ActivationEstimator {
     /// Original ONNX model (preserved for later use in quantization)
@@ -38,10 +33,12 @@ pub struct ActivationEstimator {
     /// tract runnable model with all intermediate outputs exposed
     #[allow(clippy::type_complexity)]
     tract_model: SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>,
-    /// Collected activation stats per layer
+    /// Collected activation stats per ONNX tensor
     layer_stats: HashMap<String, ActivationStats>,
     /// Mapping from tract output index → layer name
     output_names: Vec<String>,
+    /// Static quantization must not discard non-finite or non-FP32 activations.
+    strict: bool,
 }
 
 impl std::fmt::Debug for ActivationEstimator {
@@ -67,6 +64,14 @@ impl ActivationEstimator {
     /// on disk. We re-parse that file with tract. If the model was constructed
     /// programmatically or the file no longer exists, this will fail.
     pub fn from_path(model: OnnxModel, onnx_path: &str) -> Result<Self> {
+        Self::prepare(model, onnx_path, None)
+    }
+
+    pub(crate) fn for_tensors(model: OnnxModel, onnx_path: &str, names: &[String]) -> Result<Self> {
+        Self::prepare(model, onnx_path, Some(names))
+    }
+
+    fn prepare(model: OnnxModel, onnx_path: &str, names: Option<&[String]>) -> Result<Self> {
         // --- Load with tract ---
         let mut tract_model = tract_onnx::onnx().model_for_path(onnx_path).map_err(|e| {
             QuantizeError::Calibration {
@@ -74,51 +79,54 @@ impl ActivationEstimator {
             }
         })?;
 
-        // --- Expose all intermediate layer outputs ---
-        // tract optimizes aggressively and fuses layers. To get per-layer stats,
-        // we mark *every* node output as a model output before optimization.
-        // Post-optimization, some may disappear (fused), but the ones that survive
-        // are the actual computation boundaries we care about.
-
-        let node_count = tract_model.nodes.len();
-
-        // Preserve original model outputs (usually just the final prediction)
-        let original_outputs: Vec<OutletId> = tract_model.outputs.to_vec();
-
-        for node_id in 0..node_count {
-            let node = &tract_model.nodes[node_id];
-            // Skip special nodes (inputs, constants that have no meaningful activation)
-            if node.op_is::<tract_onnx::tract_core::ops::source::TypedSource>()
-                || node.op_is::<tract_onnx::tract_core::ops::konst::Const>()
-            {
-                continue;
-            }
-
-            // Each node can have multiple outputs (most have 1)
-            for output_idx in 0..node.outputs.len() {
-                let outlet = OutletId::new(node_id, output_idx);
-                // Don't duplicate if it's already an output
-                if !original_outputs.contains(&outlet) {
-                    tract_model.outputs.push(outlet);
+        // tract labels computational outputs but names sources by ONNX input
+        // name. Give those input outlets explicit labels as well.
+        for outlet in tract_model.inputs.clone() {
+            let label = tract_model.nodes[outlet.node].name.clone();
+            tract_model.set_outlet_label(outlet, label).map_err(|e| {
+                QuantizeError::Calibration {
+                    reason: format!("failed to label model input: {e}"),
                 }
-            }
+            })?;
         }
-
-        // --- Optimize and prepare for inference ---
+        // Resolve original ONNX tensor labels BEFORE optimization. Output slots
+        // preserve their order across tract optimization, even when nodes fuse.
+        let output_names = if let Some(names) = names {
+            names.to_vec()
+        } else {
+            let mut labels: Vec<_> = tract_model.outlet_labels.values().cloned().collect();
+            labels.sort();
+            labels.dedup();
+            labels
+        };
+        let outlets: Result<Vec<_>> = output_names
+            .iter()
+            .map(|name| {
+                tract_model
+                    .outlet_labels
+                    .iter()
+                    .find(|(_, label)| *label == name)
+                    .map(|(outlet, _)| *outlet)
+                    .ok_or_else(|| QuantizeError::Calibration {
+                        reason: format!("tract could not resolve ONNX tensor '{name}'"),
+                    })
+            })
+            .collect();
+        tract_model
+            .set_output_outlets(&outlets?)
+            .map_err(|e| QuantizeError::Calibration {
+                reason: format!("failed to expose activation tensors: {e}"),
+            })?;
         let optimized_model =
             tract_model
                 .into_optimized()
                 .map_err(|e| QuantizeError::Calibration {
                     reason: format!("tract optimization failed: {e}"),
                 })?;
-
-        // Collect output names AFTER optimization, since optimization may
-        // renumber/rename nodes. Use the optimized model's output outlets
-        // to map back to node names.
-        let mut output_names = Vec::new();
-        for outlet in optimized_model.outputs.iter() {
-            let node = &optimized_model.nodes[outlet.node];
-            output_names.push(node.name.clone());
+        if optimized_model.outputs.len() != output_names.len() {
+            return Err(QuantizeError::Calibration {
+                reason: "tract changed the number of requested activation outputs".into(),
+            });
         }
 
         let tract_model =
@@ -133,6 +141,7 @@ impl ActivationEstimator {
             tract_model,
             layer_stats: HashMap::new(),
             output_names,
+            strict: names.is_some(),
         })
     }
 
@@ -240,7 +249,17 @@ impl ActivationEstimator {
             let tensor = tvalue.clone().into_tensor();
 
             // Extract f32 data from the tensor
+            if self.strict && tensor.to_array_view::<f32>().is_err() {
+                return Err(QuantizeError::Calibration {
+                    reason: format!("activation '{layer_name}' is not FP32"),
+                });
+            }
             let data = extract_f32_data(&tensor)?;
+            if self.strict && data.iter().any(|v| !v.is_finite()) {
+                return Err(QuantizeError::Calibration {
+                    reason: format!("activation '{layer_name}' contains non-finite values"),
+                });
+            }
 
             // Update or create ActivationStats
             self.layer_stats
@@ -265,8 +284,7 @@ impl ActivationEstimator {
 
     /// Consume and return owned activation statistics.
     ///
-    /// Use this when passing stats to `Quantizer::with_calibration`, which
-    /// expects `HashMap<String, ActivationStats>` (owned, not borrowed).
+    /// Keys are original ONNX tensor names, not node or weight names.
     pub fn into_layer_stats(self) -> HashMap<String, ActivationStats> {
         self.layer_stats
     }
