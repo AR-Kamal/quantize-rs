@@ -450,7 +450,7 @@ mod tests {
         assert!(!stats.is_empty());
 
         // All stats should have count = 10 samples
-        for (_name, stat) in stats.iter() {
+        for stat in stats.values() {
             // Each layer sees data from all samples (aggregated)
             assert!(stat.count() > 0);
         }

@@ -99,6 +99,7 @@ bit widths, noncontiguous axes, odd INT4 packing, malformed axes/shapes, role
 selection, batching, compatible/conflicting sharing, filters, and layer overrides.
 
 ```bash
+python -m unittest discover -s eval -p test_operator_axes_smoke.py -v
 python eval/operator_axes_smoke_test.py --binary target/debug/quantize-rs
 python eval/operator_axes_smoke_test.py --binary target/debug/quantize-rs --python
 ```
@@ -106,10 +107,23 @@ python eval/operator_axes_smoke_test.py --binary target/debug/quantize-rs --pyth
 Use an `.exe` path on Windows. The runtime suite exercises non-square MatMul,
 batched/broadcast weights, a vector left operand, embeddings, shared weights,
 all four Gemm transpose combinations and non-default alpha/beta. It compares
-optimized/unoptimized ONNX Runtime outputs, checks unselected tensors and public
-output names, and verifies rejected configurations preserve existing files.
+optimized/unoptimized ONNX Runtime outputs with FP32 activations, checks
+unselected tensors and public output names, and verifies rejected configurations
+preserve existing files.
 INT8 asymmetric/symmetric per-channel, INT8 per-tensor, widened INT4 and native
 INT4 with a layer override are covered. `--python` requires the newly built wheel.
+
+Strict parity retains `atol=1e-5, rtol=1e-4` and sets the optimized session's
+`session.qdq_matmulnbits_accuracy_level` to `1` (FP32 activations), without
+disabling graph optimizations. ORT 1.29 can fuse weight-only DQ/MatMul into
+MatMulNBits with the default accuracy level `4`, allowing additional INT8
+activation quantization. That default execution is tested in a separate session:
+all three quantized execution modes must stay below the original relative RMSE
+limits against the source FP32 graph (3% for INT8, 35% for INT4), on every sample
+and output. See ORT's [session configuration](https://github.com/microsoft/onnxruntime/blob/v1.29.0/include/onnxruntime/core/session/onnxruntime_session_options_config_keys.h)
+and [MatMulNBits accuracy levels](https://github.com/microsoft/onnxruntime/blob/v1.29.0/docs/ContribOperators.md#com.microsoft.MatMulNBits).
+These settings apply to the test sessions; exported models retain their normal
+ONNX graph and consumers choose their own runtime settings.
 
 These generated graph checks establish local numerical/serialization behavior.
 The separate [MNIST report](eval/CNN_EVALUATION.md) remains evidence for the Conv

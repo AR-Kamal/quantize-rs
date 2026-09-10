@@ -124,8 +124,10 @@ impl OnnxModel {
             } else {
                 count.checked_mul(4) == Some(t.raw_data.len())
                     && t.raw_data
-                        .chunks_exact(4)
-                        .all(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).is_finite())
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .all(|&b| f32::from_le_bytes(b).is_finite())
             };
             if !valid {
                 return Err(unsupported(format!(

@@ -71,6 +71,14 @@ see [RELEASE_v0.10.0.md](RELEASE_v0.10.0.md) for candidate evidence and open gat
 
 ### Fixed
 
+- Stable Clippy release failures: decode fixed-width FP32 bytes using
+  `as_chunks::<4>()` and iterate statistics map values directly. Rust 1.88 remains
+  the minimum supported version.
+- Operator runtime checks account for ORT's default MatMulNBits activation
+  quantization. Strict optimized/unoptimized parity uses FP32 activations;
+  default optimized execution separately passes the existing FP32-reference
+  quality limits. Regression tests protect both checks, and failures report
+  runtime versions, operator cases and quantization modes.
 - Python package license metadata now matches the repository's MIT license.
 - Source distributions include Python type information needed by rebuilt wheels;
   obsolete maturin configuration pointing to a nonexistent `python/` is removed.

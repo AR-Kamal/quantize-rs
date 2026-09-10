@@ -566,8 +566,11 @@ impl OnnxModel {
                 }
                 initializer
                     .raw_data
-                    .chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .copied()
+                    .map(f32::from_le_bytes)
                     .collect()
             } else {
                 initializer.float_data.clone()
@@ -997,9 +1000,12 @@ fn decode_scale_tensor(init: &crate::onnx_proto::TensorProto) -> Result<Vec<f32>
     if expected.checked_mul(4) == Some(init.raw_data.len()) {
         return Ok(init
             .raw_data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .take(expected)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .copied()
+            .map(f32::from_le_bytes)
             .collect());
     }
 

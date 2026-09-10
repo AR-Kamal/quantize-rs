@@ -196,8 +196,11 @@ impl OnnxModel {
                     return Err(invalid());
                 }
                 init.raw_data
-                    .chunks_exact(4)
-                    .map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .copied()
+                    .map(f32::from_le_bytes)
                     .collect()
             };
             if data.iter().any(|v| !v.is_finite()) {

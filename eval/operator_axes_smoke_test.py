@@ -61,14 +61,31 @@ def build(path, kind, trans_a=0, trans_b=0):
     return rng.normal(size=(5, *input_shape)).astype(np.float32), axis, protected
 
 
-def session(path, optimize):
+def session(path, optimize, *, fp32_activations=False):
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = 1
     opts.inter_op_num_threads = 1
     opts.log_severity_level = 3
     opts.graph_optimization_level = (ort.GraphOptimizationLevel.ORT_ENABLE_ALL if optimize
                                     else ort.GraphOptimizationLevel.ORT_DISABLE_ALL)
+    if fp32_activations:
+        # Newer ORT fuses DQ + MatMul into MatMulNBits at accuracy_level=4,
+        # which may dynamically quantize activations to INT8. Strict export
+        # parity needs FP32 activations (level 1), with fusion still enabled.
+        opts.add_session_config_entry("session.qdq_matmulnbits_accuracy_level", "1")
     return ort.InferenceSession(str(path), opts, providers=["CPUExecutionProvider"])
+
+
+def check_outputs(expected, plain, strict, optimized, bits, context):
+    for name, output in [("unoptimized", plain), ("optimized FP32 activations", strict),
+                         ("optimized defaults", optimized)]:
+        assert output.shape == expected.shape, f"{context}: {name} output shape"
+        assert np.isfinite(output).all(), f"{context}: {name} nonfinite output"
+        relative_rmse = np.linalg.norm(output - expected) / max(np.linalg.norm(expected), 1e-8)
+        assert relative_rmse < (0.03 if bits == 8 else 0.35), (
+            f"{context}: {name} relative RMSE={relative_rmse}"
+        )
+    np.testing.assert_allclose(plain, strict, atol=1e-5, rtol=1e-4, err_msg=context)
 
 
 def check(src, dst, samples, axis, protected, bits=8, per_channel=True):
@@ -84,14 +101,17 @@ def check(src, dst, samples, axis, protected, bits=8, per_channel=True):
     assert attrs.get("axis") == (axis if per_channel else None), attrs
     assert numpy_helper.to_array(after["W_scale"]).size == (before["W"].dims[axis] if per_channel else 1)
     assert [v.name for v in a.graph.output] == [v.name for v in b.graph.output]
-    reference, plain, optimized = session(src, False), session(dst, False), session(dst, True)
-    for sample in samples:
+    reference, plain = session(src, False), session(dst, False)
+    strict = session(dst, True, fp32_activations=True)
+    optimized = session(dst, True)
+    for sample_index, sample in enumerate(samples):
         feed = {"X": sample}
-        for expected, x, y in zip(reference.run(None, feed), plain.run(None, feed), optimized.run(None, feed)):
-            assert np.isfinite(x).all() and np.isfinite(y).all()
-            np.testing.assert_allclose(x, y, atol=1e-5, rtol=1e-4)
-            relative_rmse = np.linalg.norm(x - expected) / max(np.linalg.norm(expected), 1e-8)
-            assert relative_rmse < (0.03 if bits == 8 else 0.35), relative_rmse
+        results = [s.run(None, feed) for s in (reference, plain, strict, optimized)]
+        assert all(len(outputs) == len(a.graph.output) for outputs in results)
+        for output_index, outputs in enumerate(zip(*results)):
+            context = (f"ORT {ort.__version__}, bits={bits}, per_channel={per_channel}, "
+                       f"sample={sample_index}, output={a.graph.output[output_index].name}")
+            check_outputs(*outputs, bits, context)
 
 
 def run(binary, *args, ok=True):
@@ -110,6 +130,7 @@ def main():
     binary = args.binary.resolve(strict=True)
     if args.python_api:
         import quantize_rs
+    print(f"ONNX Runtime {ort.__version__}, ONNX {onnx.__version__}, NumPy {np.__version__}", flush=True)
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         cases = [(name, 0, 0) for name in ["matmul", "batched", "broadcast", "vector", "shared", "embedding"]]
@@ -122,12 +143,14 @@ def main():
                                     ([], 8, False),
                                     (["--bits", "4", "--per-channel", "--symmetric"], 4, True),
                                     (["--per-channel", "--symmetric", "--layer-bits", "W=4", "--native-int4"], 4, True)]:
+                print(f"[check] {kind} transA={a} transB={b}: {flags or ['per-tensor INT8']}", flush=True)
                 run(binary, "quantize", src, "-o", dst, *flags)
                 check(src, dst, samples, axis, protected, bits, pc)
             if args.python_api:
+                print(f"[check] {kind} transA={a} transB={b}: Python per-channel symmetric INT8", flush=True)
                 quantize_rs.quantize(str(src), str(dst), per_channel=True, symmetric=True)
                 check(src, dst, samples, axis, protected)
-            print(f"[ok] {kind} transA={a} transB={b}: selection, axes, storage and ORT parity", flush=True)
+            print(f"[ok] {kind} transA={a} transB={b}: selection, axes, storage, FP32 parity and default ORT quality", flush=True)
         # Valid ONNX graphs with unsafe shared-weight uses must fail before save.
         src, dst = root / "conflict.onnx", root / "preserved.onnx"
         samples, _, _ = build(src, "matmul")

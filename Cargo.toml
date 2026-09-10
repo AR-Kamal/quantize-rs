@@ -2,8 +2,8 @@
 name = "quantize-rs"
 version = "0.10.0"
 edition = "2021"
-# Minimum supported Rust version. Our own code needs 1.87 (`<int>::is_multiple_of`);
-# the binding floor is 1.88, required by `time` — a build-dependency pulled in
+# Minimum supported Rust version. Our own code needs 1.88 (`slice::as_chunks`),
+# also required by `time` — a build-dependency pulled in
 # transitively via the default `calibration` feature (tract-linalg → liquid → time).
 # Validated by clippy's `incompatible_msrv` lint under `-D warnings`.
 rust-version = "1.88"

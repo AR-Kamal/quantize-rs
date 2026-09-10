@@ -129,7 +129,9 @@ jobs:
           maturin build --locked --features python
           python -m pip install --force-reinstall --no-deps target/wheels/*.whl
       - name: Operator selection, quantization axes and Python API checks
-        run: python eval/operator_axes_smoke_test.py --binary ./target/debug/quantize-rs --python
+        run: |
+          python -m unittest discover -s eval -p test_operator_axes_smoke.py -v
+          python eval/operator_axes_smoke_test.py --binary ./target/debug/quantize-rs --python
       - name: Static calibration and Python API execution checks
         run: python eval/calibration_smoke_test.py --binary ./target/debug/quantize-rs --python
       - name: Matrix activation accuracy and integer-kernel execution
