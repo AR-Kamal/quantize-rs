@@ -7,12 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.10.0] - Unreleased
 
-Release candidate scope is frozen to quantization correctness, evaluation and the
-experimental matrix path below. Set the actual release date after verification;
-see [RELEASE_v0.10.0.md](RELEASE_v0.10.0.md) for candidate evidence and open gates.
+This version focuses on quantization correctness, reproducible evaluation, and
+the experimental matrix path below. See the [CNN](eval/CNN_EVALUATION.md) and
+[GPT-2](eval/GPT2_EVALUATION.md) reports for measured results and their scope.
 
 ### Changed
 
+- Reorganized the public READMEs around installation, supported workflows, and
+  runnable examples. Clarified runtime and benchmark limits, corrected source-build
+  setup, and replaced private release-checklist links with public documentation.
 - Model-aware weight quantization now selects direct Conv/MatMul/Gemm input-1
   initializers. Per-channel axes follow Conv output channels, MatMul's last weight
   dimension and Gemm `transB`. CLI/Python argument lists are unchanged; unrelated
@@ -71,6 +74,15 @@ see [RELEASE_v0.10.0.md](RELEASE_v0.10.0.md) for candidate evidence and open gat
 
 ### Fixed
 
+- CPU calibration evaluations enable ORT's `session.x64quantprecision` to avoid
+  U8S8 intermediate saturation on x64 CPUs without VNNI. A numerical Conv
+  regression protects optimized execution; quality thresholds remain unchanged.
+  Matrix/CNN reports record the setting, and runtime examples document it.
+  Shared matrix cases keep default runtime settings because ORT 1.30 precision
+  conversion can fail on shared initializers; their numerical gates remain active.
+- Release runtime suites have separate steps and retain Conv diagnostics on
+  failure. Publishing jobs download only wheels and the source distribution,
+  excluding diagnostic artifacts.
 - Stable Clippy release failures: decode fixed-width FP32 bytes using
   `as_chunks::<4>()` and iterate statistics map values directly. Rust 1.88 remains
   the minimum supported version.
@@ -101,8 +113,8 @@ see [RELEASE_v0.10.0.md](RELEASE_v0.10.0.md) for candidate evidence and open gat
   claims from current documentation. Historical entries below describe their
   releases and may contain claims superseded by this correction.
 
-No release tag or registry publication is included. See [ROADMAP.md](ROADMAP.md)
-for the representative real-model evaluation still required before v1.0.
+Broader representative model evaluation and deployment validation remain
+necessary before v1.0.
 
 ## [0.9.0] - 2026-06-06
 

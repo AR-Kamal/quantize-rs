@@ -6,6 +6,8 @@ This is a deterministic correctness regression, not a real-dataset accuracy or
 latency benchmark. Calibration and held-out samples share the same distribution.
 """
 import argparse
+from contextlib import nullcontext
+import platform
 import json
 import subprocess
 import tempfile
@@ -14,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import onnx
 import onnxruntime as ort
+from ort_utils import cpu_session_options
 from onnx import TensorProto, helper, numpy_helper
 
 
@@ -48,36 +51,54 @@ def run(binary, *args, ok=True):
 def check_accuracy(src, dst, samples):
     onnx.checker.check_model(str(dst))
     ref = ort.InferenceSession(str(src), providers=["CPUExecutionProvider"])
-    options = ort.SessionOptions()
+    options = cpu_session_options()
+    options.log_severity_level = 3
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    options.optimized_model_filepath = str(dst.with_suffix(".unoptimized.onnx"))
     unfused = ort.InferenceSession(str(dst), options, providers=["CPUExecutionProvider"])
-    fused = ort.InferenceSession(str(dst), providers=["CPUExecutionProvider"])
-    for sample in samples:
+    optimized_options = cpu_session_options()
+    optimized_options.log_severity_level = 3
+    optimized_options.optimized_model_filepath = str(dst.with_suffix(".optimized.onnx"))
+    fused = ort.InferenceSession(str(dst), optimized_options, providers=["CPUExecutionProvider"])
+    for sample_index, sample in enumerate(samples):
         inputs = {"X": sample[None]}
         expected = ref.run(None, inputs)[0]
         a = unfused.run(None, inputs)[0]
         b = fused.run(None, inputs)[0]
-        assert np.isfinite(a).all() and np.isfinite(b).all()
-        for actual in [a, b]:
-            relative_rmse = np.linalg.norm(actual - expected) / np.linalg.norm(expected)
-            assert relative_rmse < 0.05, relative_rmse
-        np.testing.assert_allclose(a, b, atol=1e-5, rtol=1e-4)
+        context = f"{dst.name}, ORT {ort.__version__}, sample={sample_index}"
+        errors = {}
+        for mode, actual in [("unoptimized", a), ("optimized", b)]:
+            assert actual.shape == expected.shape, f"{context}: {mode} output shape"
+            assert np.isfinite(actual).all(), f"{context}: {mode} nonfinite output"
+            errors[mode] = float(np.linalg.norm(actual - expected) / max(np.linalg.norm(expected), 1e-8))
+        if any(error >= 0.05 for error in errors.values()):
+            np.savez(dst.with_suffix(".failure.npz"), input=sample[None], expected=expected,
+                     unoptimized=a, optimized=b)
+        assert all(error < 0.05 for error in errors.values()), f"{context}: relative RMSE {errors}, limit=0.05"
+        np.testing.assert_allclose(a, b, atol=1e-5, rtol=1e-4, err_msg=context)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True)
     parser.add_argument("--python", action="store_true", dest="python_api")
+    parser.add_argument("--artifacts", type=Path, help="Keep generated models and data in this directory for diagnosis")
     args = parser.parse_args()
     args.binary = str(Path(args.binary).resolve(strict=True))
-    with tempfile.TemporaryDirectory() as td:
+    print(f"Platform {platform.platform()}, ONNX Runtime {ort.__version__}, ONNX {onnx.__version__}, NumPy {np.__version__}, x64quantprecision=1", flush=True)
+    if args.artifacts:
+        args.artifacts.mkdir(parents=True, exist_ok=True)
+    directory = nullcontext(args.artifacts) if args.artifacts else tempfile.TemporaryDirectory()
+    with directory as td:
         root = Path(td)
         src, data = root / "model.onnx", root / "samples.npy"
         build_model(src)
         rng = np.random.default_rng(42)
         np.save(data, rng.uniform(-1, 1, (24, 3, 8, 8)).astype(np.float32))
         held_out = rng.uniform(-1, 1, (5, 3, 8, 8)).astype(np.float32)
+        np.save(root / "held_out.npy", held_out)
         for method in ["minmax", "percentile:99.9", "entropy", "mse"]:
+            print(f"[check] {method}: CLI Conv calibration", flush=True)
             dst = root / f"{method.replace(':', '_')}.onnx"
             run(args.binary, "calibrate", src, "--data", data, "-o", dst, "--method", method, "--per-channel", "--symmetric")
             graph = onnx.load(dst).graph
@@ -98,6 +119,7 @@ def main():
             assert dst.read_bytes() == before
         run(args.binary, "calibrate", src, "--data", root / "missing.data", "-o", dst, ok=False)
         if args.python_api:
+            print("[check] Python Conv calibration", flush=True)
             import quantize_rs
             quantize_rs.quantize_with_calibration(str(src), str(dst), calibration_data=str(data), per_channel=True, symmetric=True,
                                                  excluded_layers=["second.weight"], min_elements=1, layer_bits={"first.weight": 8})

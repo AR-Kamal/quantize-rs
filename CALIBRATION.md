@@ -1,8 +1,8 @@
 # Static INT8 Conv calibration
 
-The v0.10.0 candidate replaces v0.9's calibrated-weight behavior with actual
-activation QDQ. This is a behavioral migration in a pre-1.0 minor release;
-publication is pending the [release gates](RELEASE_v0.10.0.md).
+In v0.10.0, static calibration replaces v0.9's calibrated-weight behavior with
+actual activation QDQ. This is a behavioral migration in a pre-1.0 minor release;
+see the [changelog](CHANGELOG.md) for version history.
 
 ## What changed
 
@@ -129,3 +129,52 @@ fusion or faster inference.
 
 The implementation follows [ONNX QuantizeLinear](https://onnx.ai/onnx/operators/onnx__QuantizeLinear.html)
 and [ONNX Runtime static quantization](https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html#static-quantization).
+
+## CPU runtime precision
+
+For static INT8 models on the ONNX Runtime CPU provider, use:
+
+```python
+import onnxruntime as ort
+
+options = ort.SessionOptions()
+options.add_session_config_entry("session.x64quantprecision", "1")
+session = ort.InferenceSession("calibrated.onnx", options, providers=["CPUExecutionProvider"])
+```
+
+On AVX2/AVX512 x64 CPUs without VNNI, ORT can lower signed QDQ to U8S8
+kernels whose intermediate 16-bit sums saturate. The precision option selects
+overflow-safe U8U8 execution on affected CPUs. Graph optimization remains enabled;
+the exported INT8 model is unchanged. This can cost performance on those CPUs.
+See ORT's [quantization guidance](https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html)
+and [session configuration definition](https://github.com/microsoft/onnxruntime/blob/v1.29.0/include/onnxruntime/core/session/onnxruntime_session_options_config_keys.h).
+
+The Conv, integer matrix and labeled CNN evaluations share these settings in
+`eval/ort_utils.py`. Matrix and CNN JSON reports record the session configuration.
+The matrix shared/fan-out cases retain default runtime settings because precision
+conversion can fail on shared initializers in ORT 1.30 on AVX2. See the
+[matrix runtime limits](MATRIX_CALIBRATION.md).
+A numerical regression checks a saturation-prone Conv against independent NumPy
+QDQ arithmetic and verifies that optimized execution still contains `QLinearConv`.
+
+During v0.10.0 verification, ORT 1.30.0 under Haswell CPU emulation reproduced
+the release failure: 34.4983% relative RMSE for the first minmax sample, versus
+1.2232% without optimization. Enabling this option restored 1.2232% with integer
+Conv fusion intact. Accuracy and optimization-parity tolerances were not relaxed.
+
+## Diagnosing runtime failures
+
+To retain the generated Conv fixtures and runtime graphs locally:
+
+```bash
+python eval/calibration_smoke_test.py --binary target/debug/quantize-rs --python --artifacts target/calibration-smoke
+```
+
+Failures report the runtime versions, calibration method, sample index, and
+relative RMSE for both unoptimized and optimized execution. The artifact directory
+contains the source and exported models, calibration and held-out samples,
+runtime-optimized graphs, and failing numerical outputs when the quality gate
+fails. CI uploads these diagnostics even when the check fails. Release verification
+shows each runtime suite as a separate step; diagnostic files are excluded from
+package publication. The 5% relative RMSE and optimization-parity limits remain
+unchanged.

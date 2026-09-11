@@ -1,6 +1,6 @@
 # Operator-aware weight quantization
 
-The v0.10.0 candidate weight-only `quantize`, `batch`, config-driven CLI and Python
+The v0.10.0 weight-only `quantize`, `batch`, config-driven CLI and Python
 `quantize` paths select direct Conv/MatMul/Gemm weight initializers and infer
 their per-channel axis. `Quantizer::quantize_model` uses the same policy.
 Existing activation-calibration entry points remain restricted to INT8 Conv

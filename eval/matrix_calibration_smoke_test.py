@@ -11,6 +11,7 @@ import tempfile
 import numpy as np
 import onnx
 import onnxruntime as ort
+from ort_utils import CPU_SESSION_CONFIG, cpu_session_options
 from onnx import helper as h, numpy_helper as nh, TensorProto
 
 
@@ -64,8 +65,11 @@ def build(path, kind, trans_a=0, trans_b=0):
     return calibration, held_out, expected_axes, protected, count
 
 
-def session(path, optimize, profile=None):
-    opts = ort.SessionOptions()
+def session(path, optimize, profile=None, precision=True):
+    # ORT 1.30's precision conversion cannot initialize shared/fan-out QDQ
+    # graphs on AVX2 (duplicate converted initializers). Those cases explicitly
+    # exercise default runtime execution; they do not claim integer fusion.
+    opts = cpu_session_options() if precision else ort.SessionOptions()
     opts.intra_op_num_threads = 1
     opts.inter_op_num_threads = 1
     opts.log_severity_level = 3
@@ -98,7 +102,10 @@ def check(src, dst, inputs, axes, protected, integer_count):
         assert nh.to_array(after[dq.input[1]]).size == before[name].dims[axis]
         assert np.all(nh.to_array(after[dq.input[2]]) == 0)
         assert after[dq.input[0]].data_type == TensorProto.INT8
-    reference, plain, optimized = session(src, False), session(dst, False), session(dst, True)
+    precision = integer_count is not None
+    reference = session(src, False, precision=precision)
+    plain = session(dst, False, precision=precision)
+    optimized = session(dst, True, precision=precision)
     output_scales = []
     for value in b.graph.output:
         dq = next(n for n in b.graph.node if n.op_type == "DequantizeLinear" and n.output[0] == value.name)
@@ -118,7 +125,7 @@ def check(src, dst, inputs, axes, protected, integer_count):
     expected, actual = np.concatenate(expected_all), np.concatenate(actual_all)
     relative_rmse = float(np.linalg.norm(actual - expected) / max(np.linalg.norm(expected), 1e-8))
     assert relative_rmse < .05, relative_rmse
-    profiled = session(dst, True, dst.with_suffix(".profile"))
+    profiled = session(dst, True, dst.with_suffix(".profile"), precision=precision)
     profiled.run(None, {"X": inputs[0][None]})
     events = json.loads(Path(profiled.end_profiling()).read_text())
     kernels = [e for e in events if e.get("cat") == "Node" and e.get("name", "").endswith("_kernel_time")]
@@ -136,7 +143,7 @@ def check(src, dst, inputs, axes, protected, integer_count):
         # inputs from the profile. The executed Q operator and quantized data
         # input establish integer execution; serialized weight types are checked above.
         assert "int8" in types[0] or "uint8" in types[0], types
-    return dict(relative_rmse=relative_rmse, maximum_parity_error_in_output_steps=max_parity_steps,
+    return dict(session_config=CPU_SESSION_CONFIG if precision else {}, relative_rmse=relative_rmse, maximum_parity_error_in_output_steps=max_parity_steps,
                 executed_integer_kernels=dict(Counter(e["args"]["op_name"] for e in integer)),
                 executed_float_matrix_kernels=dict(Counter(e["args"]["op_name"] for e in floating)),
                 fusion_required=integer_count is not None,

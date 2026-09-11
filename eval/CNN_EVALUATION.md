@@ -63,6 +63,15 @@ latency/memory savings. Timing is subject to scheduling and power-state variatio
 the evaluation gates accuracy, not latency or RSS. Other calibration methods have
 synthetic regressions but were not evaluated on this labeled run.
 
+## CPU precision in subsequent runs
+
+The evaluation now sets `session.x64quantprecision=1` through `ort_utils.py`
+and records it in `environment.session_config`. This avoids intermediate integer
+saturation on x64 CPUs without VNNI while retaining graph optimization. See
+[CPU runtime precision](../CALIBRATION.md#cpu-runtime-precision). The historical
+measurements above and their checked-in JSON report are unchanged; compare new
+latency measurements only with their recorded runtime and session settings.
+
 ## Reproduce
 
 ```bash

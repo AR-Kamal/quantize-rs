@@ -93,6 +93,11 @@ no model download is needed. They cover independent weight ranges, calibration
 dataset sensitivity, transpose axes, sharing, selection filters, preserved public
 outputs/unselected tensors and failures that preserve existing output files.
 
+Cases requiring integer fusion use the shared
+[CPU precision setting](CALIBRATION.md#cpu-runtime-precision) to avoid integer
+saturation on x64 CPUs without VNNI. JSON reports record `session_config` for
+each case. Graph fusion and the integer-kernel requirements remain enabled.
+
 Runtime checks use NumPy seed 917, 256 uniform calibration samples in `[-2,2]`
 and 32 separate held-out samples in `[-1,1]`. Each case must have pooled output
 relative RMSE below 5% versus FP32. Optimized/unoptimized QDQ results must agree
@@ -105,8 +110,13 @@ the ORT profile. This checks runtime behavior, not merely serialized QDQ nodes.
 ORT can internally convert signed activations to UINT8 and prepack weights;
 the exported activation zero points remain INT8.
 
-**Shared QDQ edges can block fusion.** Fan-out cases are tested for numerical
-correctness and report their actual kernel types without requiring fusion.
+**Shared QDQ edges can block fusion.** Shared-weight and fan-out cases retain
+ORT default session settings and report actual kernel types without requiring
+fusion. ORT 1.30 precision conversion on AVX2 can fail to initialize a shared-weight
+graph with `Attempt to replace the existing tensor`. The default-runtime cases
+still enforce the same accuracy and parity limits; they are not evidence of
+overflow-safe integer execution. In the AVX2 verification they execute float
+MatMul/Gemm kernels. Their report has an empty `session_config` object.
 Likewise, constant matrix-shaped Gemm bias blocked fusion in the initial runtime
 probe, which is why this prototype accepts vector bias only. Kernel behavior
 depends on the runtime/provider/version. Integer execution alone is not evidence

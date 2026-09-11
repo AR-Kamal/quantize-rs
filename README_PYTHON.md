@@ -1,23 +1,35 @@
 # quantize-rs Python API
 
-Python bindings for the Rust ONNX quantization toolkit. Install with
-`pip install quantization-rs`; build this checkout with
-`maturin develop --features python`. Wheels use abi3-py39 (Python 3.9+).
+Quantize ONNX models from Python with the Rust quantize-rs engine. Supports INT8
+and INT4 weight quantization for Conv/MatMul/Gemm, plus static INT8 activation
+calibration for supported Conv models.
 
-This checkout is the unpublished **v0.10.0** candidate. Build this checkout to
-test the candidate; registry installation commands install the published version.
-See [release readiness](RELEASE_v0.10.0.md) and
-[CALIBRATION.md](CALIBRATION.md) for migration from published v0.9 behavior.
-The [labeled CNN evaluation](eval/CNN_EVALUATION.md) records MNIST accuracy,
-latency and memory for the underlying Rust calibration pipeline.
+## Installation
 
-The separate experimental [matrix activation prototype](MATRIX_CALIBRATION.md)
-is currently a Rust/CLI API. Python activation calibration remains Conv-only.
+Requires **Python 3.9+**:
+
+```bash
+python -m pip install quantization-rs
+```
+
+Install `quantization-rs`, then import `quantize_rs`. Prebuilt wheels use Python's
+stable ABI (`abi3-py39`). ONNX Runtime and NumPy are separate dependencies for
+inference and dataset preparation:
+
+```bash
+python -m pip install numpy onnxruntime
+```
+
+For source builds, use Rust 1.88+ and an active virtual environment. Follow the
+[checkout and build instructions](https://github.com/AR-Kamal/quantize-rs/blob/master/README.md#build-this-checkout), including
+`maturin develop --locked --release --features python`.
+
+This reference describes the **0.10 API**. Calibration behavior changed from 0.9;
+see [migration details](https://github.com/AR-Kamal/quantize-rs/blob/master/CALIBRATION.md) and the [changelog](https://github.com/AR-Kamal/quantize-rs/blob/master/CHANGELOG.md).
+The experimental [matrix activation path](https://github.com/AR-Kamal/quantize-rs/blob/master/MATRIX_CALIBRATION.md) is a Rust/CLI API;
+Python activation calibration remains Conv-only.
 
 ## Weight-only quantization
-
-The [bounded GPT-2 INT8 evaluation](eval/GPT2_EVALUATION.md) records matrix-weight
-coverage, held-out perplexity and runtime behavior for the underlying Rust path.
 
 ```python
 import quantize_rs
@@ -25,9 +37,13 @@ quantize_rs.quantize("model.onnx", "weights_int8.onnx", per_channel=True, symmet
 quantize_rs.quantize("model.onnx", "weights_int4.onnx", bits=4, native_int4=True)
 ```
 
-`quantize(input_path, output_path, bits=8, per_channel=False,
-excluded_layers=None, min_elements=0, layer_bits=None, native_int4=False,
-symmetric=False)`
+**Signature:**
+
+```python
+quantize(input_path, output_path, bits=8, per_channel=False,
+         excluded_layers=None, min_elements=0, layer_bits=None,
+         native_int4=False, symmetric=False)
+```
 
 | Parameter | Meaning |
 |-----------|---------|
@@ -48,16 +64,23 @@ guaranteed. External tensor files are unsupported.
 Embeddings, biases and unrelated constants remain unchanged. Shared weights with
 conflicting axes or unsupported uses return errors; exclusions keep them FP32.
 Indirect weights through Reshape/Transpose are skipped. See
-[operator selection and migration](OPERATOR_QUANTIZATION.md).
+[operator selection and migration](https://github.com/AR-Kamal/quantize-rs/blob/master/OPERATOR_QUANTIZATION.md).
 
 ## Static INT8 Conv activation quantization
 
-`quantize_with_calibration(input_path, output_path, calibration_data=None,
-bits=8, per_channel=False, method="minmax", num_samples=100, sample_shape=None,
-native_int4=False, symmetric=False, excluded_layers=None, min_elements=0,
-layer_bits=None)`
+**Signature:**
 
 ```python
+quantize_with_calibration(
+    input_path, output_path, calibration_data=None, bits=8, per_channel=False,
+    method="minmax", num_samples=100, sample_shape=None, native_int4=False,
+    symmetric=False, excluded_layers=None, min_elements=0, layer_bits=None,
+)
+```
+
+```python
+import quantize_rs
+
 quantize_rs.quantize_with_calibration(
     "model.onnx", "calibrated.onnx", calibration_data="samples.npy",
     per_channel=True, symmetric=True, method="minmax",
@@ -87,12 +110,14 @@ Requires opset >= 13 and one fixed FP32 NCHW model input with batch 1. Missing
 calibration data, dynamic/multiple inputs, existing QDQ, custom domains/subgraphs,
 external tensors and unpreserved ONNX sections are rejected. Random fallback has
 been removed. Excluded Conv nodes can still receive a quantized activation from a
-selected upstream Conv. See [the full contract](CALIBRATION.md).
+selected upstream Conv. See [the full contract](https://github.com/AR-Kamal/quantize-rs/blob/master/CALIBRATION.md).
 
 ## Preparing data
 
-Use representative preprocessed inputs from the deployment distribution. Each
-sample excludes the batch dimension; save the stacked array as FP32:
+Use representative preprocessed inputs from the deployment distribution. Define
+`preprocess(image)` to match your model and return one `[C,H,W]` sample, without
+the batch dimension. Given a collection of `calibration_images`, save the stacked
+array as FP32:
 
 ```python
 import numpy as np
@@ -109,17 +134,42 @@ improvement over weight-only quantization or guaranteed inference speedup.
 `opset_version`, `num_nodes`, `inputs`, and `outputs`.
 
 ```python
+import quantize_rs
+
 info = quantize_rs.model_info("calibrated.onnx")
 print(info.name, info.opset_version, info.inputs)
 ```
 
 ## Runtime integration and logging
 
+After saving a preprocessed FP32 batch matching the model input as `input.npy`,
+run inference:
+
 ```python
+import numpy as np
 import onnxruntime as ort
-session = ort.InferenceSession("calibrated.onnx", providers=["CPUExecutionProvider"])
-output = session.run(None, {session.get_inputs()[0].name: your_fp32_batch})
+
+batch = np.load("input.npy")
+options = ort.SessionOptions()
+options.add_session_config_entry("session.x64quantprecision", "1")
+session = ort.InferenceSession("calibrated.onnx", options, providers=["CPUExecutionProvider"])
+output = session.run(None, {session.get_inputs()[0].name: batch})
 ```
+
+For static INT8 models, the precision setting above avoids intermediate integer
+saturation on x64 CPUs without VNNI while keeping graph optimization enabled.
+The CPU calibration evaluations use this setting; see the
+[CPU runtime guidance](https://github.com/AR-Kamal/quantize-rs/blob/master/CALIBRATION.md#cpu-runtime-precision).
+
+Runtime fusion can change execution precision. In particular, ORT can fuse
+weight DequantizeLinear/MatMul into a kernel that also quantizes activations.
+See [runtime validation](https://github.com/AR-Kamal/quantize-rs/blob/master/OPERATOR_QUANTIZATION.md#validation) for FP32-activation
+parity settings and separate default-runtime quality checks. Measure accuracy
+and performance with the runtime settings you intend to deploy.
+
+The [MNIST calibration report](https://github.com/AR-Kamal/quantize-rs/blob/master/eval/CNN_EVALUATION.md) and
+[GPT-2 weight-only report](https://github.com/AR-Kamal/quantize-rs/blob/master/eval/GPT2_EVALUATION.md) include measured accuracy,
+latency, and memory. Smaller files do not guarantee faster inference.
 
 Both quantization functions release the Python GIL during heavy work. Calls remain
 synchronous; use an executor if invoking them from an asyncio event loop.
@@ -130,15 +180,20 @@ and type-checker support.
 
 ## Verification
 
-After building and installing this checkout's wheel:
+From the repository root, after installing this checkout's bindings and
+`numpy`, `onnx`, and `onnxruntime`, build the CLI and run:
 
 ```bash
+cargo build --locked --bin quantize-rs
+python -m unittest discover -s eval -p test_operator_axes_smoke.py -v
+python eval/operator_axes_smoke_test.py --binary target/debug/quantize-rs --python
 python eval/calibration_smoke_test.py --binary target/debug/quantize-rs --python
 ```
 
-On Windows append `.exe` to the binary path. The smoke test covers actual Python
-keyword handling, filters, rejection behavior and ONNX Runtime output accuracy.
+On Windows append `.exe` to the binary path. The suites cover operator
+selection, axes, Python keyword handling, filters, rejection behavior, and ONNX
+Runtime output accuracy.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/AR-Kamal/quantize-rs/blob/master/LICENSE)

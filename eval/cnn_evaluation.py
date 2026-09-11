@@ -27,6 +27,7 @@ import urllib.request
 import numpy as np
 import onnx
 import onnxruntime as ort
+from ort_utils import CPU_SESSION_CONFIG, cpu_session_options
 import psutil
 
 MODEL_URL = "https://media.githubusercontent.com/media/onnx/models/main/validated/vision/classification/mnist/model/mnist-12.onnx"
@@ -59,7 +60,7 @@ def fetch(path, url, digest, download):
 
 
 def session(path, threads, optimized=True, save=None):
-    options = ort.SessionOptions()
+    options = cpu_session_options()
     options.intra_op_num_threads = threads
     options.inter_op_num_threads = 1
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
@@ -249,7 +250,8 @@ def main():
               "environment": {"platform": platform.platform(), "processor": platform.processor(),
                               "python": platform.python_version(), "onnx": onnx.__version__,
                               "onnxruntime": ort.__version__, "numpy": np.__version__,
-                              "provider": "CPUExecutionProvider", "intra_op_threads": args.threads},
+                              "provider": "CPUExecutionProvider", "intra_op_threads": args.threads,
+                              "session_config": CPU_SESSION_CONFIG},
               "policy": {"weights": "same selected Conv weights in both INT8 variants; other weights FP32",
                          "calibration_samples": len(arrays[0]), "method": "minmax",
                          "minimum_baseline_accuracy": args.minimum_baseline_accuracy,
