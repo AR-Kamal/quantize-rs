@@ -4,7 +4,9 @@
 
 [![CI](https://github.com/AR-Kamal/quantize-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/AR-Kamal/quantize-rs/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
+[![Crates.io Downloads](https://img.shields.io/crates/d/quantize-rs.svg)](https://crates.io/crates/quantize-rs)
 [![PyPI](https://img.shields.io/pypi/v/quantization-rs.svg)](https://pypi.org/project/quantization-rs/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/quantization-rs.svg)](https://pypi.org/project/quantization-rs/)
 [![Documentation](https://docs.rs/quantize-rs/badge.svg)](https://docs.rs/quantize-rs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
